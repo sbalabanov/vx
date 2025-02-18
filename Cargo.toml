@@ -1,0 +1,22 @@
+[package]
+name = "vx"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vx"
+path = "src/vx/lib.rs"
+
+[[bin]]
+name = "vx"
+test = false
+doc = false
+
+[dependencies]
+bincode = "1.3.3"
+clap = { version = "4.5.29", features = ["derive"] }
+serde = { version = "1.0.217", features = ["derive"] }
+sled = "0.34.7"
+thiserror = "2.0.11"
+toml = "0.8.20"
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
