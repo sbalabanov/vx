@@ -1,5 +1,6 @@
 use crate::context::Context;
 use crate::storage::branch::{delete, get, get_by_name, list, new, BranchError};
+use crate::storage::commit;
 use serde::{Deserialize, Serialize};
 
 /// Represents a branch in the version control system.
@@ -26,7 +27,27 @@ impl Branch {
         parent: u64,
         parentseq: u64,
     ) -> Result<Self, BranchError> {
-        new(context, name, headseq, parent, parentseq)
+        // Validate branch name - only allow lowercase alphanumeric and : . / _ characters
+        if !name.chars().all(|c| {
+            c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || c == ':'
+                || c == '.'
+                || c == '/'
+                || c == '_'
+        }) {
+            return Err(BranchError::InvalidName(
+                "Branch names can only contain lowercase letters, numbers, and the following characters: : . / _"
+                    .to_string(),
+            ));
+        }
+        let branch = new(context, name, headseq, parent, parentseq)?;
+
+        // Set this as the current branch with commit sequence 0
+        commit::save_current(context, branch.id, 0)
+            .map_err(|e| BranchError::Other(format!("Failed to set current branch: {}", e)))?;
+
+        Ok(branch)
     }
 
     /// Retrieves a branch from the database.

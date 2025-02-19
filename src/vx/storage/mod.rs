@@ -1,4 +1,6 @@
 pub mod branch;
+pub mod commit;
 
 /// The name of the database file.
-pub const DATABASE_FILE_NAME: &str = "vx.db";
+const BRANCHES_FILE_NAME: &str = "branches.db";
+const COMMITS_FILE_NAME: &str = "commits.db";

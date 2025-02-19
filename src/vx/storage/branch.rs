@@ -1,9 +1,9 @@
 use crate::context::Context;
 use crate::core::branch::Branch;
-use crate::storage::DATABASE_FILE_NAME;
+use crate::storage::BRANCHES_FILE_NAME;
 use sled::Tree;
 use thiserror::Error;
-use xxhash_rust::xxh3::xxh3_64; // Use xxHash (xxh3_64) for computing branch ID
+use xxhash_rust::xxh3::xxh3_64;
 
 /// Represents errors that can occur while handling branches.
 #[derive(Error, Debug)]
@@ -19,6 +19,12 @@ pub enum BranchError {
 
     #[error("Branch with name '{0}' already exists")]
     BranchExists(String),
+
+    #[error("Invalid branch name: {0}")]
+    InvalidName(String),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Structure to hold the branch tree.
@@ -28,7 +34,7 @@ struct BranchStore {
 
 /// Opens branch store.
 fn open(context: &Context) -> Result<BranchStore, BranchError> {
-    let db = sled::open(context.workspace_path.join(DATABASE_FILE_NAME))?;
+    let db = sled::open(context.workspace_path.join(BRANCHES_FILE_NAME))?;
     let branch_tree = db.open_tree("branches")?;
     Ok(BranchStore { branch_tree })
 }
