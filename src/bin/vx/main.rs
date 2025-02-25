@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod branch;
 mod commit;
+mod repo;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -18,6 +19,7 @@ struct Cli {
 enum Commands {
     Branch(branch::BranchArgs),
     Commit(commit::CommitArgs),
+    Repo(repo::RepoArgs),
 }
 
 fn main() {
@@ -27,5 +29,6 @@ fn main() {
     match &cli.cmd {
         Commands::Branch(args) => branch::exec(args),
         Commands::Commit(args) => commit::exec(args),
+        Commands::Repo(args) => repo::exec(args),
     }
 }

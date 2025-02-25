@@ -29,15 +29,10 @@ impl Branch {
     ) -> Result<Self, BranchError> {
         // Validate branch name - only allow lowercase alphanumeric and : . / _ characters
         if !name.chars().all(|c| {
-            c.is_ascii_lowercase()
-                || c.is_ascii_digit()
-                || c == ':'
-                || c == '.'
-                || c == '/'
-                || c == '_'
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '/' || c == '-'
         }) {
             return Err(BranchError::InvalidName(
-                "Branch names can only contain lowercase letters, numbers, and the following characters: : . / _"
+                "Branch names can only contain lowercase letters, numbers, and the following characters: . / -"
                     .to_string(),
             ));
         }

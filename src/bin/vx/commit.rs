@@ -42,7 +42,7 @@ fn list(context: &Context) {
     match Commit::list(context) {
         Ok(commits) => {
             for commit in commits {
-                eprintln!("Commit Seq: {}, Message: {}", commit.seq, commit.message);
+                eprintln!("{}:{}\t{}", commit.branch, commit.seq, commit.message);
             }
         }
         Err(e) => eprintln!("Failed to list commits: {:?}", e),
@@ -51,7 +51,7 @@ fn list(context: &Context) {
 
 fn show(context: &Context, id: u64) {
     match Commit::get(context, id) {
-        Ok(commit) => eprintln!("Commit Seq: {}\nMessage: {}", commit.seq, commit.message),
+        Ok(commit) => eprintln!("{}:{}\t{}", commit.branch, commit.seq, commit.message),
         Err(e) => eprintln!("Failed to show commit: {:?}", e),
     }
 }
