@@ -25,7 +25,7 @@ impl Commit {
             return Err(CommitError::NoBranchSelected);
         }
         let next_seq = seq + 1;
-        let treehash: Digest = [0; 16]; // TODO: Replace with actual tree hash
+        let treehash: Digest = 0; // TODO: Replace with actual tree hash
 
         let commit = commitstore::new(context, branch, next_seq, treehash, message)?;
         commitstore::save_current(context, branch, next_seq)?;

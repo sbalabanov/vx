@@ -1,26 +1,27 @@
+use crate::context::Context;
+use crate::core::common::Digest;
+use crate::storage::blob::BlobError;
+use std::path::Path;
+
 /// Represents a binary large object (Blob).
 pub struct Blob {
-    /// The size of the blob in bytes.
+    pub contenthash: Digest,
     pub size: u64,
-    /// The content hash of the blob.
-    pub contenthash: [u8; 16],
 }
 
 impl Blob {
-    /// Creates a new `Blob` with the given content hash and size.
-    ///
-    /// # Arguments
-    ///
-    /// * `contenthash` - A 16-byte array representing the content hash.
-    /// * `size` - A 64-bit unsigned integer representing the size of the file on disk.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let hash = [0u8; 16];
-    /// let blob = Blob::new(hash, 1024);
-    /// ```
-    pub fn new(contenthash: [u8; 16], size: u64) -> Self {
+    /// Creates a new `Blob`.
+    pub fn new(contenthash: Digest, size: u64) -> Self {
         Blob { contenthash, size }
+    }
+
+    /// Creates a `Blob` from a file by calling the appropriate function from storage.
+    pub fn from_file(context: &Context, file_path: &Path) -> Result<Self, BlobError> {
+        crate::storage::blob::from_file(context, file_path)
+    }
+
+    /// Copies a `Blob` to a file by calling the appropriate function from storage.
+    pub fn to_file(&self, context: &Context, dest_path: &Path) -> Result<(), BlobError> {
+        crate::storage::blob::to_file(context, &self.contenthash, dest_path)
     }
 }
