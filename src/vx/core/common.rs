@@ -5,19 +5,16 @@ use xxhash_rust::xxh3::Xxh3;
 
 pub type Digest = u128;
 
-/// Digest of a non-existent object.
-pub const NONE: Digest = 0;
-
 /// Trait for converting a digest to a hexadecimal string representation and computing a hash.
 pub trait DigestExt {
+    const NONE: Digest = 0;
+
     /// Converts the digest to a hexadecimal string representation.
     fn to_hex_string(&self) -> String;
 
     /// Computes the hash of a file and returns it as a Digest and the size of the file.
     fn compute_hash(file_path: &Path) -> Result<(Digest, u64), std::io::Error>;
 }
-
-const BUFFER_SIZE: usize = 8192; // 8 KB
 
 impl DigestExt for Digest {
     fn to_hex_string(&self) -> String {
@@ -26,6 +23,8 @@ impl DigestExt for Digest {
     }
 
     fn compute_hash(file_path: &Path) -> Result<(Digest, u64), std::io::Error> {
+        const BUFFER_SIZE: usize = 8192; // 8 KB
+
         let file = File::open(file_path)?;
         let mut reader = BufReader::new(file);
         let mut buffer = [0u8; BUFFER_SIZE];

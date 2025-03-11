@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::blob::Blob;
-use crate::core::common::Digest;
+use crate::core::common::{Digest, DigestExt};
 use crate::storage::tree::{self, TreeError};
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::Xxh3;
@@ -31,7 +31,7 @@ impl Folder {
     /// Creates a new empty folder with default values.
     pub fn default() -> Self {
         Self {
-            hash: crate::core::common::NONE,
+            hash: Digest::NONE,
             folders: Vec::new(),
             files: Vec::new(),
         }

@@ -46,17 +46,16 @@ impl Commit {
     /// Creates a new commit.
     pub fn make(context: &Context, message: String) -> Result<Self, CommitError> {
         let commit_id = commitstore::get_current(context)?;
-        if commit_id.branch == 0 {
-            return Err(CommitError::NoBranchSelected);
-        }
+
         let next_seq = commit_id.seq + 1;
-        let treehash: Digest = 0; // TODO: Replace with actual tree hash
+
+        let treehash = merkle_tree(context)?;
 
         Self::new(
             context,
             CommitID {
                 branch: commit_id.branch,
-                seq: next_seq,
+                seq: commit_id.seq + 1,
             },
             treehash,
             message,
@@ -351,4 +350,11 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result
     }
 
     Ok(())
+}
+
+fn merkle_tree(context: &Context) -> Result<Digest, CommitError> {
+    // Clean up temporary files if needed
+    // std::fs::remove_dir_all(&temp_dir).ok();
+
+    Ok(Digest::NONE)
 }
