@@ -5,6 +5,9 @@ use xxhash_rust::xxh3::Xxh3;
 
 pub type Digest = u128;
 
+/// Digest of a non-existent object.
+pub const NONE: Digest = 0;
+
 /// Trait for converting a digest to a hexadecimal string representation and computing a hash.
 pub trait DigestExt {
     /// Converts the digest to a hexadecimal string representation.

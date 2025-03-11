@@ -1,8 +1,9 @@
 use crate::context::Context;
-use crate::core::commit::Commit;
+use crate::core::commit::{Commit, CommitID};
 use crate::core::common::Digest;
 use crate::storage::COMMITS_FILE_NAME;
 use sled::Tree;
+use std::io;
 use thiserror::Error;
 
 /// Represents errors that can occur while handling commits.
@@ -14,11 +15,17 @@ pub enum CommitError {
     #[error("Serialization/Deserialization error: {0}")]
     SerializationError(#[from] bincode::Error),
 
+    #[error("Filesystem error: {0}")]
+    IoError(#[from] io::Error),
+
     #[error("Commit not found")]
     NotFound,
 
     #[error("No branch selected")]
     NoBranchSelected,
+
+    #[error("{0}")]
+    Other(String),
 }
 
 const CURRENT_COMMIT_KEY: &[u8] = b"current";
@@ -44,14 +51,13 @@ pub fn new(
     let commit_tree = open_tree(context, COMMITS_TREE)?;
 
     let commit = Commit {
-        branch,
-        seq,
+        id: CommitID { branch, seq },
         treehash,
         message,
     };
 
     // Use branch ID and sequence number as composite key
-    let key = compose_key(branch, seq);
+    let key = compose_key(commit.id);
     let value = bincode::serialize(&commit)?;
 
     commit_tree.insert(key, value)?;
@@ -61,7 +67,8 @@ pub fn new(
 
 /// Gets commit info by branch ID and sequence number.
 pub fn get(context: &Context, branch: u64, seq: u64) -> Result<Commit, CommitError> {
-    let key = compose_key(branch, seq);
+    let commit_id = CommitID { branch, seq };
+    let key = compose_key(commit_id);
     let commit_tree = open_tree(context, COMMITS_TREE)?;
 
     match commit_tree.get(key)? {
@@ -74,32 +81,32 @@ pub fn get(context: &Context, branch: u64, seq: u64) -> Result<Commit, CommitErr
 }
 
 /// Gets the current commit's branch ID and sequence number.
-pub fn get_current(context: &Context) -> Result<(u64, u64), CommitError> {
+pub fn get_current(context: &Context) -> Result<CommitID, CommitError> {
     let seq_tree = open_tree(context, METADATA)?;
 
     match seq_tree.get(CURRENT_COMMIT_KEY)? {
         Some(ivec) => {
             let (branch, seq): (u64, u64) = bincode::deserialize(&ivec)?;
-            Ok((branch, seq))
+            Ok(CommitID { branch, seq })
         }
-        None => Ok((0, 0)), // Return (0,0) if no commits exist
+        None => Ok(CommitID { branch: 0, seq: 0 }), // Return (0,0) if no commits exist
     }
 }
 
 /// Saves the current commit's branch ID and sequence number.
-pub fn save_current(context: &Context, branch: u64, seq: u64) -> Result<(), CommitError> {
+pub fn save_current(context: &Context, commit_id: CommitID) -> Result<(), CommitError> {
     let seq_tree = open_tree(context, METADATA)?;
-    let value = bincode::serialize(&(branch, seq))?;
+    let value = bincode::serialize(&(commit_id.branch, commit_id.seq))?;
     seq_tree.insert(CURRENT_COMMIT_KEY, value)?;
     seq_tree.flush()?;
     Ok(())
 }
 
 /// Helper function to create composite key from branch ID and sequence number
-fn compose_key(branch: u64, seq: u64) -> [u8; 16] {
+fn compose_key(commit_id: CommitID) -> [u8; 16] {
     let mut key = [0u8; 16];
-    key[..8].copy_from_slice(&branch.to_be_bytes());
-    key[8..].copy_from_slice(&seq.to_be_bytes());
+    key[..8].copy_from_slice(&commit_id.branch.to_be_bytes());
+    key[8..].copy_from_slice(&commit_id.seq.to_be_bytes());
     key
 }
 

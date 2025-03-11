@@ -1,4 +1,5 @@
 use crate::context::Context;
+use crate::core::commit::CommitID;
 use crate::storage::branch::{delete, get, get_by_name, list, new, BranchError};
 use crate::storage::commit;
 use serde::{Deserialize, Serialize};
@@ -39,8 +40,14 @@ impl Branch {
         let branch = new(context, name, headseq, parent, parentseq)?;
 
         // Set this as the current branch with commit sequence 0
-        commit::save_current(context, branch.id, 0)
-            .map_err(|e| BranchError::Other(format!("Failed to set current branch: {}", e)))?;
+        commit::save_current(
+            context,
+            CommitID {
+                branch: branch.id,
+                seq: 0,
+            },
+        )
+        .map_err(|e| BranchError::Other(format!("Failed to set current branch: {}", e)))?;
 
         Ok(branch)
     }
