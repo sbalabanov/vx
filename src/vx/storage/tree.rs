@@ -13,11 +13,17 @@ pub enum TreeError {
     #[error("Serialization/Deserialization error: {0}")]
     SerializationError(#[from] bincode::Error),
 
+    #[error("Filesystem error: {0}")]
+    IoError(#[from] std::io::Error),
+
     #[error("Folder not found")]
     FolderNotFound,
 
     #[error("File not found")]
     FileNotFound,
+
+    #[error("{0}")]
+    Other(String),
 }
 
 const FOLDERS_TREE: &str = "folders";

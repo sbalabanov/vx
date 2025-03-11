@@ -1,6 +1,6 @@
 use clap::{Args, Subcommand};
 use vx::context::Context;
-use vx::core::commit::{ChangeAction, ChangeType, Commit};
+use vx::core::commit::Commit;
 
 #[derive(Args, Debug)]
 pub(super) struct CommitArgs {
@@ -19,7 +19,6 @@ enum CommitCommands {
         #[arg(default_value = None)]
         id: Option<u64>,
     },
-    Files,
 }
 
 pub(super) fn exec(args: &CommitArgs) {
@@ -34,9 +33,6 @@ pub(super) fn exec(args: &CommitArgs) {
         }
         CommitCommands::Show { id } => {
             show(&context, *id);
-        }
-        CommitCommands::Files => {
-            files(&context);
         }
     }
 }
@@ -60,44 +56,16 @@ fn list(context: &Context) {
 }
 
 fn show(context: &Context, id: Option<u64>) {
-    match id {
-        Some(commit_id) => match Commit::get_from_current_branch(context, commit_id) {
-            Ok(commit) => eprintln!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message),
-            Err(e) => eprintln!("Failed to show commit: {:?}", e),
-        },
-        None => {
-            // Show current commit when no ID is provided
-            match Commit::get_current(context) {
-                Ok(commit) => {
-                    eprintln!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message)
-                }
-                Err(e) => eprintln!("Failed to show current commit: {:?}", e),
-            }
-        }
-    }
-}
+    let result = if let Some(commit_id) = id {
+        Commit::get_from_current_branch(context, commit_id)
+    } else {
+        // Show current commit when no ID is provided
+        Commit::get_current(context)
+    };
 
-fn files(context: &Context) {
-    match Commit::get_changed_files(context) {
-        Ok(files) => {
-            if files.is_empty() {
-                eprintln!("No files changed since current commit");
-            } else {
-                eprintln!("Files changed since current commit:");
-                for file in files {
-                    let type_str = match file.change_type {
-                        ChangeType::File => "file",
-                        ChangeType::Folder => "folder",
-                    };
-                    let action_str = match file.action {
-                        ChangeAction::Added => "added",
-                        ChangeAction::Deleted => "deleted",
-                        ChangeAction::Modified => "modified",
-                    };
-                    eprintln!("  {} {} {}", action_str, type_str, file.path.display());
-                }
-            }
-        }
-        Err(e) => eprintln!("Failed to list changed files: {:?}", e),
+    if let Ok(commit) = result {
+        eprintln!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message);
+    } else if let Err(e) = result {
+        eprintln!("Failed to show commit: {:?}", e);
     }
 }
