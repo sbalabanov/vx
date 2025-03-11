@@ -24,6 +24,9 @@ pub enum CommitError {
     #[error("No branch selected")]
     NoBranchSelected,
 
+    #[error("No changes to commit")]
+    NoChanges,
+
     #[error("{0}")]
     Other(String),
 }
@@ -65,9 +68,8 @@ pub fn new(
     Ok(commit)
 }
 
-/// Gets commit info by branch ID and sequence number.
-pub fn get(context: &Context, branch: u64, seq: u64) -> Result<Commit, CommitError> {
-    let commit_id = CommitID { branch, seq };
+/// Gets commit info by commit ID.
+pub fn get(context: &Context, commit_id: CommitID) -> Result<Commit, CommitError> {
     let key = compose_key(commit_id);
     let commit_tree = open_tree(context, COMMITS_TREE)?;
 

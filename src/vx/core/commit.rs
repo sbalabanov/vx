@@ -47,9 +47,15 @@ impl Commit {
     pub fn make(context: &Context, message: String) -> Result<Self, CommitError> {
         let commit_id = commitstore::get_current(context)?;
 
-        let next_seq = commit_id.seq + 1;
-
         let treehash = merkle_tree(context)?;
+
+        let commit = Commit::get(context, commit_id)?;
+
+        // Check if the current commit's tree hash matches the new tree hash
+        // If they're the same, there are no changes to commit
+        if commit.treehash == treehash {
+            return Err(CommitError::NoChanges);
+        }
 
         Self::new(
             context,
@@ -76,23 +82,32 @@ impl Commit {
         commitstore::list(context, commit_id.branch)
     }
 
-    /// Retrieves a specific commit by its sequence number.
-    pub fn get(context: &Context, seq: u64) -> Result<Self, CommitError> {
-        let commit_id = commitstore::get_current(context)?;
-        if commit_id.branch == 0 {
-            return Err(CommitError::NoBranchSelected);
-        }
-        commitstore::get(context, commit_id.branch, seq)
+    /// Retrieves a specific commit by id.
+    pub fn get(context: &Context, id: CommitID) -> Result<Self, CommitError> {
+        commitstore::get(context, id)
     }
 
-    pub fn get_changed_files(context: &Context) -> Result<Vec<PathBuf>, CommitError> {
+    /// Retrieves a specific commit by id.
+    pub fn get_from_current_branch(context: &Context, seq: u64) -> Result<Self, CommitError> {
+        let mut commit_id = commitstore::get_current(context)?;
+        commit_id.seq = seq;
+        commitstore::get(context, commit_id)
+    }
+
+    /// Retrieves the current commit.
+    pub fn get_current(context: &Context) -> Result<Self, CommitError> {
+        let commit_id = commitstore::get_current(context)?;
+        commitstore::get(context, commit_id)
+    }
+
+    pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, CommitError> {
         // sergeyb: tried to use walkdir, but it's not working as expected
         // too high level, object creation overhead and can't properly traverse bottom up with filtering
 
         // get the commit to compare against, so far current commit
         let commit_id = commitstore::get_current(context)?;
 
-        let commit = Self::get(context, commit_id.seq)?;
+        let commit = Self::get(context, commit_id)?;
 
         // start with root folder's tree and traverse down
 
@@ -134,7 +149,12 @@ impl Commit {
                     // no more dirs to process in filesystem, the remaining ones from vx are deleted from checkout
                     while state.vx_pos < state.vx_folder.folders.len() {
                         let folder = &state.vx_folder.folders[state.vx_pos];
-                        changed_paths.push(state.current_dir.join(&folder.name));
+                        changed_paths.push(Change {
+                            action: ChangeAction::Deleted,
+                            path: state.current_dir.join(&folder.name),
+                            change_type: ChangeType::Folder,
+                            contenthash: folder.blob.contenthash,
+                        });
                         state.vx_pos += 1;
                     }
 
@@ -148,7 +168,12 @@ impl Commit {
                 if state.vx_pos >= state.vx_folder.folders.len() {
                     // no more folder to process in vx, the remaining ones from fs are added to checkout
                     while state.fs_pos < state.dirs.len() {
-                        changed_paths.push(state.dirs[state.fs_pos].clone());
+                        changed_paths.push(Change {
+                            action: ChangeAction::Added,
+                            path: state.dirs[state.fs_pos].clone(),
+                            change_type: ChangeType::Folder,
+                            contenthash: Digest::NONE,
+                        });
                         state.fs_pos += 1;
                     }
 
@@ -182,13 +207,23 @@ impl Commit {
                     }
                     Ordering::Less => {
                         // fs < vx: added, advance fs
-                        changed_paths.push(fs_dir.clone());
+                        changed_paths.push(Change {
+                            action: ChangeAction::Added,
+                            path: fs_dir.clone(),
+                            change_type: ChangeType::Folder,
+                            contenthash: Digest::NONE,
+                        });
                         state.fs_pos += 1;
                         continue 'horizontal;
                     }
                     Ordering::Greater => {
                         // fs > vx: deleted, advance vx
-                        changed_paths.push(state.current_dir.join(&vx_dir.name));
+                        changed_paths.push(Change {
+                            action: ChangeAction::Deleted,
+                            path: state.current_dir.join(&vx_dir.name),
+                            change_type: ChangeType::Folder,
+                            contenthash: vx_dir.blob.contenthash,
+                        });
                         state.vx_pos += 1;
                         continue 'horizontal;
                     }
@@ -208,6 +243,24 @@ struct LevelState {
     // simple index pointers instead of iterators because Rust ownership rules become hard
     fs_pos: usize,
     vx_pos: usize,
+}
+
+pub enum ChangeAction {
+    Added,
+    Deleted,
+    Modified,
+}
+
+pub enum ChangeType {
+    File,
+    Folder,
+}
+
+pub struct Change {
+    pub action: ChangeAction,
+    pub path: PathBuf,
+    pub change_type: ChangeType,
+    pub contenthash: Digest,
 }
 
 fn new_level(
@@ -284,7 +337,7 @@ fn clear_state(state: &mut LevelState) {
 }
 
 /// Process files in the current folder
-fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result<(), CommitError> {
+fn process_files(state: &LevelState, changed_paths: &mut Vec<Change>) -> Result<(), CommitError> {
     let fs_files = &state.files;
     let vx_files = &state.vx_folder.files;
 
@@ -297,7 +350,12 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result
         if fs_pos >= fs_files.len() {
             // no more files to process in filesystem, the remaining ones from vx are deleted from checkout
             while vx_pos < vx_files.len() {
-                changed_paths.push(state.current_dir.join(&vx_files[vx_pos].name));
+                changed_paths.push(Change {
+                    action: ChangeAction::Deleted,
+                    path: state.current_dir.join(&vx_files[vx_pos].name),
+                    change_type: ChangeType::File,
+                    contenthash: vx_files[vx_pos].blob.contenthash,
+                });
                 vx_pos += 1;
             }
             break;
@@ -306,7 +364,14 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result
         if vx_pos >= vx_files.len() {
             // no more files to process in vx, the remaining ones from fs are added to checkout
             while fs_pos < fs_files.len() {
-                changed_paths.push(fs_files[fs_pos].clone());
+                let fs_file_path = &fs_files[fs_pos];
+                let (fs_hash, _) = Digest::compute_hash(fs_file_path)?;
+                changed_paths.push(Change {
+                    action: ChangeAction::Added,
+                    path: fs_file_path.clone(),
+                    change_type: ChangeType::File,
+                    contenthash: fs_hash,
+                });
                 fs_pos += 1;
             }
             break;
@@ -330,7 +395,12 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result
 
                 // If hashes don't match, file has changed
                 if fs_hash != vx_hash {
-                    changed_paths.push(state.current_dir.join(fs_name));
+                    changed_paths.push(Change {
+                        action: ChangeAction::Modified,
+                        path: state.current_dir.join(fs_name),
+                        change_type: ChangeType::File,
+                        contenthash: fs_hash,
+                    });
                 }
 
                 fs_pos += 1;
@@ -338,12 +408,22 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result
             }
             Ordering::Less => {
                 // fs < vx: added, advance fs
-                changed_paths.push(state.current_dir.join(fs_name));
+                changed_paths.push(Change {
+                    action: ChangeAction::Added,
+                    path: state.current_dir.join(fs_name),
+                    change_type: ChangeType::File,
+                    contenthash: Digest::NONE,
+                });
                 fs_pos += 1;
             }
             Ordering::Greater => {
                 // fs > vx: deleted, advance vx
-                changed_paths.push(state.current_dir.join(vx_name));
+                changed_paths.push(Change {
+                    action: ChangeAction::Deleted,
+                    path: state.current_dir.join(vx_name),
+                    change_type: ChangeType::File,
+                    contenthash: vx_files[vx_pos].blob.contenthash,
+                });
                 vx_pos += 1;
             }
         }
@@ -352,6 +432,8 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<PathBuf>) -> Result
     Ok(())
 }
 
+// Generate and save a merkle tree for the current checkout.
+// Returns the hash of the merkle tree root.
 fn merkle_tree(context: &Context) -> Result<Digest, CommitError> {
     // Clean up temporary files if needed
     // std::fs::remove_dir_all(&temp_dir).ok();
