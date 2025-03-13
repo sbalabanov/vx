@@ -6,6 +6,7 @@ use crate::global::{DATA_FOLDER, TEMP_FOLDER};
 use crate::storage::commit::{self as commitstore};
 use crate::storage::tree::{self as treestore, TreeError};
 use serde::{Deserialize, Serialize};
+use sled::Db;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
@@ -51,41 +52,13 @@ impl Tree {
         }
     }
 
-    /// Creates a new folder with the specified contents.
-    pub fn new(
-        context: &Context,
-        folders: Vec<Folder>,
-        files: Vec<File>,
-    ) -> Result<Self, TreeError> {
-        // Calculate hash based on contents
-        let mut hasher = Xxh3::new();
-
-        // Add folder names and hashes to the hash calculation
-        for folder in &folders {
-            hasher.update(folder.name.as_bytes());
-            hasher.update(&folder.hash.to_be_bytes());
-        }
-
-        // Add file names and hashes to the hash calculation
-        for file in &files {
-            hasher.update(file.name.as_bytes());
-            hasher.update(&file.blob.contenthash.to_be_bytes());
-        }
-
-        let tree = Self {
-            hash: hasher.digest128(),
-            folders,
-            files,
-        };
-
-        treestore::save(context, &tree)?;
-
+    /// Creates a new empty tree and saves it to the database.
+    pub fn create_empty(context: &Context) -> Result<Self, TreeError> {
+        let db = treestore::open(context)?;
+        let tree = new_tree(&db, Vec::new(), Vec::new())?;
+        treestore::save(&db, &tree)?;
+        db.flush()?;
         Ok(tree)
-    }
-
-    /// Retrieves a folder from the database by its hash.
-    pub fn get(context: &Context, hash: &Digest) -> Result<Self, TreeError> {
-        treestore::get(context, hash)
     }
 
     pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, TreeError> {
@@ -99,18 +72,21 @@ impl Tree {
         let commit = Commit::get(context, commit_id)
             .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
 
-        traverse_tree_for_changes(context, commit.treehash)
+        let db = treestore::open(context)?;
+        traverse_tree_for_changes(&context, &db, commit.treehash)
     }
 
+    /// Creates a new tree from the current directory recursively.
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
-        persist_tree(&context, Path::new(""))
+        let db = treestore::open(context)?;
+        persist_tree(&context, &db, Path::new(""))
     }
 }
 
 impl File {
     pub fn from_path(context: &Context, name: String, path: &Path) -> Result<Self, TreeError> {
         let blob = Blob::from_file_and_store(context, path)
-            .map_err(|e| TreeError::Other(format!("Blob error: {:?}", e)))?;
+            .map_err(|e| TreeError::Other(format!("Blob error for path {:?}: {:?}", path, e)))?;
         let file = Self { name: name, blob };
         Ok(file)
     }
@@ -137,11 +113,40 @@ pub struct Change {
     pub contenthash: Digest,
 }
 
+/// Creates a new tree with the specified contents.
+fn new_tree(db: &Db, folders: Vec<Folder>, files: Vec<File>) -> Result<Tree, TreeError> {
+    // Calculate hash based on contents
+    let mut hasher = Xxh3::new();
+
+    // Add folder names and hashes to the hash calculation
+    for folder in &folders {
+        hasher.update(folder.name.as_bytes());
+        hasher.update(&folder.hash.to_be_bytes());
+    }
+
+    // Add file names and hashes to the hash calculation
+    for file in &files {
+        hasher.update(file.name.as_bytes());
+        hasher.update(&file.blob.contenthash.to_be_bytes());
+    }
+
+    let tree = Tree {
+        hash: hasher.digest128(),
+        folders,
+        files,
+    };
+
+    treestore::save(db, &tree)?;
+
+    Ok(tree)
+}
+
 // Walk the file tree and vx tree in parallel, identifying differences.
 // There are reasons we are not using recursive algorithm: it would be harder to debug a long stack and
 // harder to parallelize.
 fn traverse_tree_for_changes(
     context: &Context,
+    db: &Db,
     treehash: Digest,
 ) -> Result<Vec<Change>, TreeError> {
     // start with root folder's tree and traverse down
@@ -162,6 +167,7 @@ fn traverse_tree_for_changes(
         if drill {
             new_level(
                 context,
+                db,
                 &mut level_states,
                 level,
                 current_dir.clone(),
@@ -278,6 +284,7 @@ struct LevelState {
 
 fn new_level(
     context: &Context,
+    db: &Db,
     level_states: &mut Vec<LevelState>,
     level: usize,
     current_dir: PathBuf,
@@ -311,8 +318,7 @@ fn new_level(
     // Reusing vectors from state object to avoid allocations
     parse_entries(&mut entries, &mut state.dirs, &mut state.files)?;
 
-    // TODO: make it reusing a single connection to the database
-    state.vx_tree = Tree::get(context, &current_hash)?;
+    state.vx_tree = treestore::get(db, current_hash)?;
 
     Ok(())
 }
@@ -332,19 +338,23 @@ fn parse_entries(
             continue;
         }
 
-        if entry.file_type()?.is_dir() {
+        let ftype = entry.file_type()?;
+        if ftype.is_dir() {
             dirs.push(file_name.into_string().unwrap());
         } else {
+            if ftype.is_symlink() {
+                // Skip symlinks and return an error
+                return Err(TreeError::Other(format!(
+                    "Symlinks are not supported as of yet: {:?}",
+                    entry.path()
+                )));
+            }
             files.push(file_name.into_string().unwrap());
         }
     }
 
     dirs.sort();
     files.sort();
-
-    // Sort directories and files separately by name
-    // dirs.sort_by(|a, b| a.cmp(&b));
-    // files.sort_by(|a, b| a.cmp(&b.file_name()));
 
     Ok(())
 }
@@ -453,7 +463,10 @@ fn process_files(
 }
 
 // (UNOPTIMIZED) Creates a tree from a directory, saving entities to storage on the go
-fn persist_tree(context: &Context, path: &Path) -> Result<Digest, TreeError> {
+fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<Digest, TreeError> {
+    // Unlike in get changes, here we go with the recursive algorithm. It will likely be
+    // rewritten anyways so going with it for the sake of time.
+
     // Get the absolute path to work with
     let abs_path = context.checkout_path.join(path);
 
@@ -471,7 +484,7 @@ fn persist_tree(context: &Context, path: &Path) -> Result<Digest, TreeError> {
     parse_entries(&mut entries, &mut dirs, &mut files)?;
 
     for dir in dirs.into_iter() {
-        let treehash = persist_tree(context, &path.join(&dir))?;
+        let treehash = persist_tree(context, db, &path.join(&dir))?;
         // Add folder to vx_folders with the hash
         vx_folders.push(Folder {
             name: dir,
@@ -484,7 +497,7 @@ fn persist_tree(context: &Context, path: &Path) -> Result<Digest, TreeError> {
         vx_files.push(File::from_path(&context, file, &file_path)?);
     }
 
-    let tree = Tree::new(&context, vx_folders, vx_files)?;
+    let tree = new_tree(db, vx_folders, vx_files)?;
 
     Ok(tree.hash)
 }

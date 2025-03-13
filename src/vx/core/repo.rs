@@ -37,7 +37,7 @@ impl Repo {
             .map_err(|e| RepoError::Other(format!("Failed to create main branch: {}", e)))?;
 
         // Create a new centinel commit with empty tree
-        let tree = Tree::new(&context, vec![], vec![])
+        let tree = Tree::create_empty(&context)
             .map_err(|e| RepoError::Other(format!("Failed to create empty tree: {}", e)))?;
         Commit::new(
             &context,

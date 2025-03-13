@@ -31,6 +31,6 @@ impl Blob {
 
     /// Copies a `Blob` to a file by calling the appropriate function from storage.
     pub fn to_file_and_store(&self, context: &Context, dest_path: &Path) -> Result<(), BlobError> {
-        crate::storage::blob::to_file(context, &self.contenthash, dest_path)
+        crate::storage::blob::to_file(context, self.contenthash, dest_path)
     }
 }

@@ -29,7 +29,7 @@ fn get_blob_dir(context: &Context) -> PathBuf {
 }
 
 /// Gets the path to a specific blob file based on its content hash.
-fn get_blob_path(context: &Context, contenthash: &Digest) -> PathBuf {
+fn get_blob_path(context: &Context, contenthash: Digest) -> PathBuf {
     let hash_str = contenthash.to_hex_string();
 
     // Use the first 2 characters as a subdirectory to avoid too many files in one directory
@@ -43,7 +43,7 @@ pub fn from_file(context: &Context, file_path: &Path) -> Result<Blob, BlobError>
     let (contenthash, size) = Digest::compute_hash(file_path)?;
 
     // Determine the destination path in the blob store
-    let blob_path = get_blob_path(context, &contenthash);
+    let blob_path = get_blob_path(context, contenthash);
 
     // Only copy the file if it doesn't already exist in the blob store
     // TODO: Make this atomic and more efficient for both small and large files
@@ -64,7 +64,7 @@ pub fn from_file(context: &Context, file_path: &Path) -> Result<Blob, BlobError>
 }
 
 /// Copies a blob from the blob store to the specified file path.
-pub fn to_file(context: &Context, contenthash: &Digest, dest_path: &Path) -> Result<(), BlobError> {
+pub fn to_file(context: &Context, contenthash: Digest, dest_path: &Path) -> Result<(), BlobError> {
     let blob_path = get_blob_path(context, contenthash);
 
     // Try copying directly to the destination file
