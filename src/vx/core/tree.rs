@@ -10,6 +10,7 @@ use sled::Db;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
+
 /// Represents a folder content in a file tree.
 /// TODO: add required attributes
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +21,12 @@ pub struct Tree {
     pub folders: Vec<Folder>,
     /// Files in this folder, sorted alphabetically by name.
     pub files: Vec<File>,
+    /// Size of the files in the tree, recursively.
+    pub size: u64,
+    /// Number of files in the tree, recursively.
+    pub file_count: u64,
+    /// Number of folders in the tree, recursively.
+    pub folder_count: u64,
 }
 
 /// Represents a file in the file tree.
@@ -49,18 +56,22 @@ impl Tree {
             hash: Digest::NONE,
             folders: Vec::new(),
             files: Vec::new(),
+            size: 0,
+            file_count: 0,
+            folder_count: 0,
         }
     }
 
     /// Creates a new empty tree and saves it to the database.
     pub fn create_empty(context: &Context) -> Result<Self, TreeError> {
         let db = treestore::open(context)?;
-        let tree = new_tree(&db, Vec::new(), Vec::new())?;
+        let tree = new_tree(&db, Vec::new(), Vec::new(), 0, 0, 0)?;
         treestore::save(&db, &tree)?;
         db.flush()?;
         Ok(tree)
     }
 
+    /// Get the changes between current tree and the latest commit.
     pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, TreeError> {
         // sergeyb: tried to use walkdir, but it's not working as expected
         // too high level, object creation overhead and can't properly traverse bottom up with filtering
@@ -73,19 +84,20 @@ impl Tree {
             .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
 
         let db = treestore::open(context)?;
-        traverse_tree_for_changes(&context, &db, commit.treehash)
+        traverse_tree(&context, &db, commit.treehash)
     }
 
     /// Creates a new tree from the current directory recursively.
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
         let db = treestore::open(context)?;
-        persist_tree(&context, &db, Path::new(""))
+        let stats = persist_tree(&context, &db, Path::new(""))?;
+        Ok(stats.hash)
     }
 }
 
 impl File {
     pub fn from_path(context: &Context, name: String, path: &Path) -> Result<Self, TreeError> {
-        let blob = Blob::from_file_and_store(context, path)
+        let blob = Blob::from_file(context, path)
             .map_err(|e| TreeError::Other(format!("Blob error for path {:?}: {:?}", path, e)))?;
         let file = Self { name: name, blob };
         Ok(file)
@@ -114,7 +126,14 @@ pub struct Change {
 }
 
 /// Creates a new tree with the specified contents.
-fn new_tree(db: &Db, folders: Vec<Folder>, files: Vec<File>) -> Result<Tree, TreeError> {
+fn new_tree(
+    db: &Db,
+    folders: Vec<Folder>,
+    files: Vec<File>,
+    size: u64,
+    file_count: u64,
+    folder_count: u64,
+) -> Result<Tree, TreeError> {
     // Calculate hash based on contents
     let mut hasher = Xxh3::new();
 
@@ -134,6 +153,9 @@ fn new_tree(db: &Db, folders: Vec<Folder>, files: Vec<File>) -> Result<Tree, Tre
         hash: hasher.digest128(),
         folders,
         files,
+        size,
+        file_count,
+        folder_count,
     };
 
     treestore::save(db, &tree)?;
@@ -144,11 +166,7 @@ fn new_tree(db: &Db, folders: Vec<Folder>, files: Vec<File>) -> Result<Tree, Tre
 // Walk the file tree and vx tree in parallel, identifying differences.
 // There are reasons we are not using recursive algorithm: it would be harder to debug a long stack and
 // harder to parallelize.
-fn traverse_tree_for_changes(
-    context: &Context,
-    db: &Db,
-    treehash: Digest,
-) -> Result<Vec<Change>, TreeError> {
+fn traverse_tree(context: &Context, db: &Db, treehash: Digest) -> Result<Vec<Change>, TreeError> {
     // start with root folder's tree and traverse down
 
     let mut changed_paths = Vec::new();
@@ -462,8 +480,20 @@ fn process_files(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TreeStats {
+    /// Hash of the folder's content, recursively.
+    hash: Digest,
+    /// Total size of the folder in bytes, recursively.
+    size: u64,
+    /// Number of files in the folder and its subfolders, recursively.
+    file_count: u64,
+    /// Number of subfolders in the folder, recursively.
+    folder_count: u64,
+}
+
 // (UNOPTIMIZED) Creates a tree from a directory, saving entities to storage on the go
-fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<Digest, TreeError> {
+fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, TreeError> {
     // Unlike in get changes, here we go with the recursive algorithm. It will likely be
     // rewritten anyways so going with it for the sake of time.
 
@@ -483,21 +513,49 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<Digest, TreeE
     // parse entries
     parse_entries(&mut entries, &mut dirs, &mut files)?;
 
+    // Initialize folder statistics
+    let mut total_size: u64 = 0;
+    let mut total_file_count: u64 = files.len() as u64;
+    let mut total_folder_count: u64 = dirs.len() as u64;
+
     for dir in dirs.into_iter() {
-        let treehash = persist_tree(context, db, &path.join(&dir))?;
-        // Add folder to vx_folders with the hash
+        // Recursively process subdirectory and get its stats
+        let folder_stats = persist_tree(context, db, &path.join(&dir))?;
+
+        // Update totals with subdirectory stats
+        total_size += folder_stats.size;
+        total_file_count += folder_stats.file_count;
+        total_folder_count += folder_stats.folder_count;
+
+        // Add folder to vx_folders with just the name and hash
         vx_folders.push(Folder {
             name: dir,
-            hash: treehash,
+            hash: folder_stats.hash,
         });
     }
 
     for file in files.into_iter() {
         let file_path = abs_path.join(&file);
-        vx_files.push(File::from_path(&context, file, &file_path)?);
+        let vx_file = File::from_path(&context, file, &file_path)?;
+
+        total_size += vx_file.blob.size;
+
+        vx_files.push(vx_file);
     }
 
-    let tree = new_tree(db, vx_folders, vx_files)?;
+    let tree = new_tree(
+        db,
+        vx_folders,
+        vx_files,
+        total_size,
+        total_file_count,
+        total_folder_count,
+    )?;
 
-    Ok(tree.hash)
+    Ok(TreeStats {
+        hash: tree.hash,
+        size: total_size,
+        file_count: total_file_count,
+        folder_count: total_folder_count,
+    })
 }

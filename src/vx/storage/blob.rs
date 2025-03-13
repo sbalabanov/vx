@@ -60,7 +60,7 @@ pub fn from_file(context: &Context, file_path: &Path) -> Result<Blob, BlobError>
         }
     }
 
-    Ok(Blob::new(contenthash, size))
+    Ok(Blob { contenthash, size })
 }
 
 /// Copies a blob from the blob store to the specified file path.
