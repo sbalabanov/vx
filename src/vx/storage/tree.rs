@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::common::Digest;
-use crate::core::tree::Folder;
+use crate::core::tree::Tree as VxTree;
 use sled::Tree;
 use thiserror::Error;
 
@@ -26,7 +26,7 @@ pub enum TreeError {
     Other(String),
 }
 
-const FOLDERS_TREE: &str = "folders";
+const TREE_NAME: &str = "tree";
 const TREE_FILE_NAME: &str = "tree.db";
 
 /// Opens the database and returns a specific tree.
@@ -36,25 +36,25 @@ fn open_tree(context: &Context, name: &str) -> Result<Tree, TreeError> {
     Ok(tree)
 }
 
-/// Saves a folder to the database.
-pub fn save_folder(context: &Context, folder: &Folder) -> Result<(), TreeError> {
-    let folder_tree = open_tree(context, FOLDERS_TREE)?;
-    let key = folder.hash.to_be_bytes();
-    let value = bincode::serialize(folder)?;
+/// Saves a tree to the database.
+pub fn save(context: &Context, tree: &VxTree) -> Result<(), TreeError> {
+    let sled_tree = open_tree(context, TREE_NAME)?;
+    let key = tree.hash.to_be_bytes();
+    let value = bincode::serialize(tree)?;
 
-    folder_tree.insert(key, value)?;
-    folder_tree.flush()?;
+    sled_tree.insert(key, value)?;
+    sled_tree.flush()?;
     Ok(())
 }
 
 /// Retrieves a folder from the database by its hash.
-pub fn get_folder(context: &Context, hash: &Digest) -> Result<Folder, TreeError> {
-    let folder_tree = open_tree(context, FOLDERS_TREE)?;
+pub fn get(context: &Context, hash: &Digest) -> Result<VxTree, TreeError> {
+    let sled_tree = open_tree(context, TREE_NAME)?;
     let key = hash.to_be_bytes();
 
-    if let Some(ivec) = folder_tree.get(key)? {
-        let folder: Folder = bincode::deserialize(&ivec)?;
-        Ok(folder)
+    if let Some(ivec) = sled_tree.get(key)? {
+        let tree: VxTree = bincode::deserialize(&ivec)?;
+        Ok(tree)
     } else {
         Err(TreeError::FolderNotFound)
     }

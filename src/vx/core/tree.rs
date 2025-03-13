@@ -4,19 +4,19 @@ use crate::core::commit::Commit;
 use crate::core::common::{Digest, DigestExt};
 use crate::global::{DATA_FOLDER, TEMP_FOLDER};
 use crate::storage::commit::{self as commitstore};
-use crate::storage::tree::{self, TreeError};
+use crate::storage::tree::{self as treestore, TreeError};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 /// Represents a folder content in a file tree.
 /// TODO: add required attributes
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Folder {
+pub struct Tree {
     /// Hash of the folder content, i.e subfolders' and files' hashes.
     pub hash: Digest,
     /// Subfolders in this folder, sorted alphabetically by name.
-    pub folders: Vec<File>,
+    pub folders: Vec<Folder>,
     /// Files in this folder, sorted alphabetically by name.
     pub files: Vec<File>,
 }
@@ -31,7 +31,17 @@ pub struct File {
     pub blob: Blob,
 }
 
-impl Folder {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents a folder in the file tree.
+/// Contains the folder name and a hash of its contents.
+pub struct Folder {
+    /// Name of the folder.
+    pub name: String,
+    /// Hash of the folder's tree, calculated from its files and subfolders.
+    pub hash: Digest,
+}
+
+impl Tree {
     /// Creates a new empty folder with default values.
     pub fn default() -> Self {
         Self {
@@ -42,14 +52,18 @@ impl Folder {
     }
 
     /// Creates a new folder with the specified contents.
-    pub fn new(context: &Context, folders: Vec<File>, files: Vec<File>) -> Result<Self, TreeError> {
+    pub fn new(
+        context: &Context,
+        folders: Vec<Folder>,
+        files: Vec<File>,
+    ) -> Result<Self, TreeError> {
         // Calculate hash based on contents
         let mut hasher = Xxh3::new();
 
         // Add folder names and hashes to the hash calculation
         for folder in &folders {
             hasher.update(folder.name.as_bytes());
-            hasher.update(&folder.blob.contenthash.to_be_bytes());
+            hasher.update(&folder.hash.to_be_bytes());
         }
 
         // Add file names and hashes to the hash calculation
@@ -58,45 +72,22 @@ impl Folder {
             hasher.update(&file.blob.contenthash.to_be_bytes());
         }
 
-        let folder = Self {
+        let tree = Self {
             hash: hasher.digest128(),
             folders,
             files,
         };
 
-        tree::save_folder(context, &folder)?;
+        treestore::save(context, &tree)?;
 
-        Ok(folder)
+        Ok(tree)
     }
 
     /// Retrieves a folder from the database by its hash.
     pub fn get(context: &Context, hash: &Digest) -> Result<Self, TreeError> {
-        tree::get_folder(context, hash)
+        treestore::get(context, hash)
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tree {}
-
-pub enum ChangeAction {
-    Added,
-    Deleted,
-    Modified,
-}
-
-pub enum ChangeType {
-    File,
-    Folder,
-}
-
-pub struct Change {
-    pub action: ChangeAction,
-    pub path: PathBuf,
-    pub change_type: ChangeType,
-    pub contenthash: Digest,
-}
-
-impl Tree {
     pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, TreeError> {
         // sergeyb: tried to use walkdir, but it's not working as expected
         // too high level, object creation overhead and can't properly traverse bottom up with filtering
@@ -112,9 +103,38 @@ impl Tree {
     }
 
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
-        // Return an empty result
-        Ok(Digest::NONE)
+        persist_tree(&context, Path::new(""))
     }
+}
+
+impl File {
+    pub fn from_path(context: &Context, name: String, path: &Path) -> Result<Self, TreeError> {
+        let blob = Blob::from_file_and_store(context, path)
+            .map_err(|e| TreeError::Other(format!("Blob error: {:?}", e)))?;
+        let file = Self { name: name, blob };
+        Ok(file)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ChangeAction {
+    Added,
+    Deleted,
+    Modified,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChangeType {
+    File,
+    Folder,
+}
+
+#[derive(Debug, Clone)]
+pub struct Change {
+    pub action: ChangeAction,
+    pub path: PathBuf,
+    pub change_type: ChangeType,
+    pub contenthash: Digest,
 }
 
 // Walk the file tree and vx tree in parallel, identifying differences.
@@ -151,7 +171,7 @@ fn traverse_tree_for_changes(
             drill = false;
         }
 
-        let mut state = &mut level_states[level - 1];
+        let state = &mut level_states[level - 1];
 
         'horizontal: loop {
             // this loops moves across directores in the same folder
@@ -162,49 +182,45 @@ fn traverse_tree_for_changes(
             // fs > vx: deleted, advance vx
             if state.fs_pos >= state.dirs.len() {
                 // no more dirs to process in filesystem, the remaining ones from vx are deleted from checkout
-                while state.vx_pos < state.vx_folder.folders.len() {
-                    let folder = &state.vx_folder.folders[state.vx_pos];
+                while state.vx_pos < state.vx_tree.folders.len() {
+                    let folder = &state.vx_tree.folders[state.vx_pos];
                     changed_paths.push(Change {
                         action: ChangeAction::Deleted,
                         path: state.current_dir.join(&folder.name),
                         change_type: ChangeType::Folder,
-                        contenthash: folder.blob.contenthash,
+                        contenthash: folder.hash,
                     });
                     state.vx_pos += 1;
                 }
 
+                process_files(&context, &state, &mut changed_paths)?;
+
                 // drill up
-                process_files(&state, &mut changed_paths)?;
-                clear_state(&mut state);
                 level -= 1;
                 continue 'vertical;
             }
 
-            if state.vx_pos >= state.vx_folder.folders.len() {
+            if state.vx_pos >= state.vx_tree.folders.len() {
                 // no more folder to process in vx, the remaining ones from fs are added to checkout
                 while state.fs_pos < state.dirs.len() {
                     changed_paths.push(Change {
                         action: ChangeAction::Added,
-                        path: state.dirs[state.fs_pos].clone(),
+                        path: state.current_dir.join(&state.dirs[state.fs_pos]),
                         change_type: ChangeType::Folder,
                         contenthash: Digest::NONE,
                     });
                     state.fs_pos += 1;
                 }
 
+                process_files(&context, &state, &mut changed_paths)?;
+
                 // drill up
-                process_files(&state, &mut changed_paths)?;
-                clear_state(&mut state);
                 level -= 1;
                 continue 'vertical;
             }
 
-            let fs_dir = &state.dirs[state.fs_pos];
-            let vx_dir = &state.vx_folder.folders[state.vx_pos];
-
-            // TODO: figure out if there is more efficient way to compare strings without
-            // excessive transformations
-            let fs_name = fs_dir.file_name().unwrap().to_str().unwrap();
+            let fs_name = &state.dirs[state.fs_pos];
+            let vx_dir = &state.vx_tree.folders[state.vx_pos];
 
             match fs_name.cmp(&vx_dir.name) {
                 Ordering::Equal => {
@@ -216,7 +232,7 @@ fn traverse_tree_for_changes(
                     // keep the current state to return to it later
                     level += 1;
                     current_dir = state.current_dir.join(fs_name);
-                    current_hash = vx_dir.blob.contenthash;
+                    current_hash = vx_dir.hash;
                     drill = true;
                     continue 'vertical;
                 }
@@ -224,7 +240,7 @@ fn traverse_tree_for_changes(
                     // fs < vx: added, advance fs
                     changed_paths.push(Change {
                         action: ChangeAction::Added,
-                        path: fs_dir.clone(),
+                        path: state.current_dir.join(fs_name),
                         change_type: ChangeType::Folder,
                         contenthash: Digest::NONE,
                     });
@@ -237,7 +253,7 @@ fn traverse_tree_for_changes(
                         action: ChangeAction::Deleted,
                         path: state.current_dir.join(&vx_dir.name),
                         change_type: ChangeType::Folder,
-                        contenthash: vx_dir.blob.contenthash,
+                        contenthash: vx_dir.hash,
                     });
                     state.vx_pos += 1;
                     continue 'horizontal;
@@ -249,11 +265,12 @@ fn traverse_tree_for_changes(
     Ok(changed_paths)
 }
 
+#[derive(Debug, Clone)]
 struct LevelState {
     current_dir: PathBuf,
-    dirs: Vec<PathBuf>,
-    files: Vec<PathBuf>,
-    vx_folder: Folder,
+    dirs: Vec<String>,
+    files: Vec<String>,
+    vx_tree: Tree,
     // simple index pointers instead of iterators because Rust ownership rules become hard
     fs_pos: usize,
     vx_pos: usize,
@@ -272,10 +289,18 @@ fn new_level(
             current_dir,
             dirs: Vec::with_capacity(128),
             files: Vec::with_capacity(128),
-            vx_folder: Folder::default(),
+            vx_tree: Tree::default(),
             fs_pos: 0,
             vx_pos: 0,
         });
+    } else {
+        let state = &mut level_states[level - 1];
+        state.current_dir = current_dir;
+        state.dirs.clear();
+        state.files.clear();
+        state.fs_pos = 0;
+        state.vx_pos = 0;
+        // state.vx_tree will be setup later
     }
 
     let state = &mut level_states[level - 1];
@@ -287,15 +312,15 @@ fn new_level(
     parse_entries(&mut entries, &mut state.dirs, &mut state.files)?;
 
     // TODO: make it reusing a single connection to the database
-    state.vx_folder = Folder::get(context, &current_hash)?;
+    state.vx_tree = Tree::get(context, &current_hash)?;
 
     Ok(())
 }
 
 fn parse_entries(
     entries: &mut std::fs::ReadDir,
-    dirs: &mut Vec<PathBuf>,
-    files: &mut Vec<PathBuf>,
+    dirs: &mut Vec<String>,
+    files: &mut Vec<String>,
 ) -> Result<(), TreeError> {
     for entry in entries {
         let entry = entry?; // Unwrap the Result<DirEntry, Error>
@@ -308,33 +333,30 @@ fn parse_entries(
         }
 
         if entry.file_type()?.is_dir() {
-            dirs.push(entry.path());
+            dirs.push(file_name.into_string().unwrap());
         } else {
-            files.push(entry.path());
+            files.push(file_name.into_string().unwrap());
         }
     }
 
+    dirs.sort();
+    files.sort();
+
     // Sort directories and files separately by name
-    dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    // dirs.sort_by(|a, b| a.cmp(&b));
+    // files.sort_by(|a, b| a.cmp(&b.file_name()));
 
     Ok(())
 }
 
-/// Clears the state of a level by resetting its vectors and counters
-/// This helps reuse the allocated memory instead of reallocating
-fn clear_state(state: &mut LevelState) {
-    state.dirs.clear();
-    state.files.clear();
-    state.fs_pos = 0;
-    state.vx_pos = 0;
-    // Note: we don't clear vx_folder as it will be replaced in new_level
-}
-
 /// Process files in the current folder
-fn process_files(state: &LevelState, changed_paths: &mut Vec<Change>) -> Result<(), TreeError> {
+fn process_files(
+    context: &Context,
+    state: &LevelState,
+    changed_paths: &mut Vec<Change>,
+) -> Result<(), TreeError> {
     let fs_files = &state.files;
-    let vx_files = &state.vx_folder.files;
+    let vx_files = &state.vx_tree.files;
 
     let mut fs_pos = 0;
     let mut vx_pos = 0;
@@ -359,11 +381,14 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<Change>) -> Result<
         if vx_pos >= vx_files.len() {
             // no more files to process in vx, the remaining ones from fs are added to checkout
             while fs_pos < fs_files.len() {
-                let fs_file_path = &fs_files[fs_pos];
-                let (fs_hash, _) = Digest::compute_hash(fs_file_path)?;
+                let fs_file_name = &fs_files[fs_pos];
+                let fs_file_path = state.current_dir.join(fs_file_name);
+
+                let (fs_hash, _) =
+                    Digest::compute_hash(&context.checkout_path.join(&fs_file_path))?;
                 changed_paths.push(Change {
                     action: ChangeAction::Added,
-                    path: fs_file_path.clone(),
+                    path: fs_file_path,
                     change_type: ChangeType::File,
                     contenthash: fs_hash,
                 });
@@ -372,18 +397,18 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<Change>) -> Result<
             break;
         }
 
-        // TODO: figure out if there is more efficient way to compare strings without
-        // excessive transformations
-        let fs_name = fs_files[fs_pos].file_name().unwrap().to_str().unwrap();
-        let vx_name = vx_files[vx_pos].name.as_str();
+        let fs_name = &fs_files[fs_pos];
+        let vx_name = &vx_files[vx_pos].name;
 
         match fs_name.cmp(vx_name) {
             Ordering::Equal => {
                 // equal names: advance both iters and check file contents
-                let fs_file_path = &fs_files[fs_pos];
+                let fs_file_name = &fs_files[fs_pos];
+                let fs_file_path = state.current_dir.join(fs_file_name);
 
                 // Compute hash for the filesystem file
-                let (fs_hash, _) = Digest::compute_hash(fs_file_path)?;
+                let (fs_hash, _) =
+                    Digest::compute_hash(&context.checkout_path.join(&fs_file_path))?;
 
                 // Get hash from the VX state
                 let vx_hash = vx_files[vx_pos].blob.contenthash;
@@ -392,7 +417,7 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<Change>) -> Result<
                 if fs_hash != vx_hash {
                     changed_paths.push(Change {
                         action: ChangeAction::Modified,
-                        path: state.current_dir.join(fs_name),
+                        path: fs_file_path,
                         change_type: ChangeType::File,
                         contenthash: fs_hash,
                     });
@@ -425,4 +450,41 @@ fn process_files(state: &LevelState, changed_paths: &mut Vec<Change>) -> Result<
     }
 
     Ok(())
+}
+
+// (UNOPTIMIZED) Creates a tree from a directory, saving entities to storage on the go
+fn persist_tree(context: &Context, path: &Path) -> Result<Digest, TreeError> {
+    // Get the absolute path to work with
+    let abs_path = context.checkout_path.join(path);
+
+    // If it's a directory, process its contents
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    let mut vx_folders = Vec::new();
+    let mut vx_files = Vec::new();
+
+    // Read directory entries
+    let mut entries = std::fs::read_dir(&abs_path)?;
+
+    // parse entries
+    parse_entries(&mut entries, &mut dirs, &mut files)?;
+
+    for dir in dirs.into_iter() {
+        let treehash = persist_tree(context, &path.join(&dir))?;
+        // Add folder to vx_folders with the hash
+        vx_folders.push(Folder {
+            name: dir,
+            hash: treehash,
+        });
+    }
+
+    for file in files.into_iter() {
+        let file_path = abs_path.join(&file);
+        vx_files.push(File::from_path(&context, file, &file_path)?);
+    }
+
+    let tree = Tree::new(&context, vx_folders, vx_files)?;
+
+    Ok(tree.hash)
 }

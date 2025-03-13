@@ -1,11 +1,10 @@
 use crate::context::Context;
 use crate::core::branch::Branch;
+use crate::core::commit::{Commit, CommitID};
+use crate::core::tree::Tree;
 use crate::storage::repo::{self, RepoError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
-use super::commit::{Commit, CommitID};
-use super::tree::Folder;
 
 /// Represents a repository in the version control system.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -38,7 +37,7 @@ impl Repo {
             .map_err(|e| RepoError::Other(format!("Failed to create main branch: {}", e)))?;
 
         // Create a new centinel commit with empty tree
-        let tree = Folder::new(&context, vec![], vec![])
+        let tree = Tree::new(&context, vec![], vec![])
             .map_err(|e| RepoError::Other(format!("Failed to create empty tree: {}", e)))?;
         Commit::new(
             &context,

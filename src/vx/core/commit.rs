@@ -65,11 +65,6 @@ impl Commit {
         )
     }
 
-    /// Returns a formatted string of the commit information.
-    pub fn summary(&self) -> String {
-        format!("Commit {}\n{}", self.id.seq, self.message)
-    }
-
     /// Lists all commits for the current branch.
     pub fn list(context: &Context) -> Result<Vec<Self>, CommitError> {
         let commit_id = commitstore::get_current(context)?;

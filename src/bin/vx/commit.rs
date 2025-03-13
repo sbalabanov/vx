@@ -64,7 +64,10 @@ fn show(context: &Context, id: Option<u64>) {
     };
 
     if let Ok(commit) = result {
-        eprintln!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message);
+        eprintln!(
+            "{}:{}\t{}\t{}\n",
+            commit.id.branch, commit.id.seq, commit.treehash, commit.message,
+        );
     } else if let Err(e) = result {
         eprintln!("Failed to show commit: {:?}", e);
     }
