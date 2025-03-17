@@ -1,6 +1,7 @@
 use crate::context::Context;
 use crate::core::blob::Blob;
 use crate::core::commit::Commit;
+use crate::core::commit::CommitID;
 use crate::core::common::{Digest, DigestExt};
 use crate::global::{DATA_FOLDER, TEMP_FOLDER};
 use crate::storage::commit::{self as commitstore};
@@ -49,19 +50,19 @@ pub struct Folder {
     pub hash: Digest,
 }
 
-impl Tree {
-    /// Creates a new empty folder with default values.
-    pub fn default() -> Self {
-        Self {
-            hash: Digest::NONE,
-            folders: Vec::new(),
-            files: Vec::new(),
-            size: 0,
-            file_count: 0,
-            folder_count: 0,
-        }
+/// Creates a new empty folder with default values.
+fn default_tree() -> Tree {
+    Tree {
+        hash: Digest::NONE,
+        folders: Vec::new(),
+        files: Vec::new(),
+        size: 0,
+        file_count: 0,
+        folder_count: 0,
     }
+}
 
+impl Tree {
     /// Creates a new empty tree and saves it to the database.
     pub fn create_empty(context: &Context) -> Result<Self, TreeError> {
         let db = treestore::open(context)?;
@@ -84,14 +85,26 @@ impl Tree {
             .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
 
         let db = treestore::open(context)?;
-        traverse_tree(&context, &db, commit.treehash)
+        traverse_tree(context, &db, commit.treehash)
     }
 
     /// Creates a new tree from the current directory recursively.
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
         let db = treestore::open(context)?;
-        let stats = persist_tree(&context, &db, Path::new(""))?;
+        let stats = persist_tree(context, &db, Path::new(""))?;
         Ok(stats.hash)
+    }
+
+    /// Checkout a specific commit or branch.
+    /// Format: "branch_name" or "branch_name:commit_id"
+    pub fn checkout(context: &Context, spec: &str) -> Result<(), TreeError> {
+        // Parse the target string
+        let commit_id = CommitID::resolve(context, spec)
+            .map_err(|e| TreeError::Other(format!("Failed to resolve commit: {:?}", e)))?;
+
+        // Call the implementation function with the parsed values
+        perform_checkout(context, commit_id)?;
+        Ok(())
     }
 }
 
@@ -125,7 +138,7 @@ pub struct Change {
     pub contenthash: Digest,
 }
 
-/// Creates a new tree with the specified contents.
+/// Creates a new tree with the specified contents, hashes it and saves to the database.
 fn new_tree(
     db: &Db,
     folders: Vec<Folder>,
@@ -217,7 +230,7 @@ fn traverse_tree(context: &Context, db: &Db, treehash: Digest) -> Result<Vec<Cha
                     state.vx_pos += 1;
                 }
 
-                process_files(&context, &state, &mut changed_paths)?;
+                process_files(context, &state, &mut changed_paths)?;
 
                 // drill up
                 level -= 1;
@@ -236,7 +249,7 @@ fn traverse_tree(context: &Context, db: &Db, treehash: Digest) -> Result<Vec<Cha
                     state.fs_pos += 1;
                 }
 
-                process_files(&context, &state, &mut changed_paths)?;
+                process_files(context, &state, &mut changed_paths)?;
 
                 // drill up
                 level -= 1;
@@ -314,7 +327,7 @@ fn new_level(
             current_dir,
             dirs: Vec::with_capacity(128),
             files: Vec::with_capacity(128),
-            vx_tree: Tree::default(),
+            vx_tree: default_tree(),
             fs_pos: 0,
             vx_pos: 0,
         });
@@ -536,7 +549,7 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, Tr
 
     for file in files.into_iter() {
         let file_path = abs_path.join(&file);
-        let vx_file = File::from_path(&context, file, &file_path)?;
+        let vx_file = File::from_path(context, file, &file_path)?;
 
         total_size += vx_file.blob.size;
 
@@ -558,4 +571,265 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, Tr
         file_count: total_file_count,
         folder_count: total_folder_count,
     })
+}
+
+/// Performs the checkout operation for a specific commit.
+/// This function materializes files on the filesystem according to what's stored in the commit tree.
+fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeError> {
+    // Get the commit
+    let commit = Commit::get(context, commit_id)
+        .map_err(|e| TreeError::Other(format!("Failed to get commit: {:?}", e)))?;
+
+    // Open the tree store
+    let db = treestore::open(context)?;
+
+    // Get the root tree from the commit
+    let root_tree = treestore::get(&db, commit.treehash)?;
+
+    // Recursively materialize the tree
+    materialize_tree(context, &db, root_tree.hash)?;
+
+    // Update the current commit
+    commitstore::save_current(context, commit_id)
+        .map_err(|e| TreeError::Other(format!("Failed to update current commit: {:?}", e)))?;
+
+    Ok(())
+}
+
+/// Recursively materializes a tree, overwriting files if needed.
+fn materialize_tree(context: &Context, db: &Db, treehash: Digest) -> Result<(), TreeError> {
+    // Pretty much a copy of traverse_tree
+    // TODO: refactor to unify the code
+
+    // start with root folder's tree and traverse down
+
+    let mut level = 1;
+
+    // using 32 as the predicted max depth of the file tree; it is cheap to allocate
+    let mut level_states: Vec<LevelState> = Vec::with_capacity(32);
+
+    let mut current_dir = PathBuf::new();
+    let mut current_hash = treehash;
+    let mut drill = true;
+
+    'vertical: while level > 0 {
+        // this loops moves up and down the file tree
+
+        if drill {
+            new_level(
+                context,
+                db,
+                &mut level_states,
+                level,
+                current_dir.clone(),
+                current_hash,
+            )?;
+
+            drill = false;
+        }
+
+        let state = &mut level_states[level - 1];
+
+        'horizontal: loop {
+            // this loops moves across directores in the same folder
+
+            // Process folders, compare two sorted lists
+            // equal names: advance both iters, proceed down
+            // fs < vx: added, advance fs
+            // fs > vx: deleted, advance vx
+            if state.fs_pos >= state.dirs.len() {
+                // no more dirs to process in filesystem, the remaining ones from vx are to be materialized unconditionally
+                while state.vx_pos < state.vx_tree.folders.len() {
+                    let vx_dir = &state.vx_tree.folders[state.vx_pos];
+                    let path = state.current_dir.join(&vx_dir.name);
+
+                    materialize_folder_without_checks(context, db, vx_dir.hash, &path)?;
+
+                    state.vx_pos += 1;
+                }
+
+                materialize_files(context, &state)?;
+
+                // drill up
+                level -= 1;
+                continue 'vertical;
+            }
+
+            if state.vx_pos >= state.vx_tree.folders.len() {
+                // no more folder to process in vx, the remaining ones from fs should be removed
+                while state.fs_pos < state.dirs.len() {
+                    let path = state.current_dir.join(&state.dirs[state.fs_pos]);
+                    std::fs::remove_dir_all(&path)?;
+                    state.fs_pos += 1;
+                }
+
+                materialize_files(context, &state)?;
+
+                // drill up
+                level -= 1;
+                continue 'vertical;
+            }
+
+            let fs_name = &state.dirs[state.fs_pos];
+            let vx_dir = &state.vx_tree.folders[state.vx_pos];
+
+            match fs_name.cmp(&vx_dir.name) {
+                Ordering::Equal => {
+                    // equal names: advance both iters, drill down
+                    state.fs_pos += 1;
+                    state.vx_pos += 1;
+
+                    // drill down the file tree by breaking into outer loop
+                    // keep the current state to return to it later
+                    level += 1;
+                    current_dir = state.current_dir.join(fs_name);
+                    current_hash = vx_dir.hash;
+                    drill = true;
+                    continue 'vertical;
+                }
+                Ordering::Less => {
+                    // fs < vx: added, advance fs
+                    std::fs::remove_dir_all(state.current_dir.join(fs_name))?;
+                    state.fs_pos += 1;
+                    continue 'horizontal;
+                }
+                Ordering::Greater => {
+                    // fs > vx: deleted, advance vx
+                    let path = state.current_dir.join(&vx_dir.name);
+                    materialize_folder_without_checks(context, db, vx_dir.hash, &path)?;
+                    state.vx_pos += 1;
+                    continue 'horizontal;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn materialize_files(context: &Context, state: &LevelState) -> Result<(), TreeError> {
+    // pretty much a copy of process_files()
+    // TODO: refactor to unify the code
+
+    let fs_files = &state.files;
+    let vx_files = &state.vx_tree.files;
+
+    let mut fs_pos = 0;
+    let mut vx_pos = 0;
+
+    // very much a copy of folder processing routine
+    // we do not want to unify because of performance
+    loop {
+        if fs_pos >= fs_files.len() {
+            // no more files to process in filesystem, the remaining ones from vx are deleted from checkout
+            while vx_pos < vx_files.len() {
+                let vx_file = &vx_files[vx_pos];
+                let path = state.current_dir.join(&vx_file.name);
+
+                vx_file
+                    .blob
+                    .to_file(context, &path)
+                    .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+
+                vx_pos += 1;
+            }
+            break;
+        }
+
+        if vx_pos >= vx_files.len() {
+            // no more files to process in vx, the remaining ones from fs are added to checkout
+            while fs_pos < fs_files.len() {
+                let fs_file_name = &fs_files[fs_pos];
+                let fs_file_path = state.current_dir.join(fs_file_name);
+
+                // Delete the file from the filesystem
+                std::fs::remove_file(&fs_file_path)?;
+
+                fs_pos += 1;
+            }
+            break;
+        }
+
+        let fs_name = &fs_files[fs_pos];
+        let vx_name = &vx_files[vx_pos].name;
+
+        match fs_name.cmp(vx_name) {
+            Ordering::Equal => {
+                // equal names: advance both iters and check file contents
+                let fs_file_name = &fs_files[fs_pos];
+                let fs_file_path = state.current_dir.join(fs_file_name);
+
+                // Compute hash for the filesystem file
+                let (fs_hash, _) =
+                    Digest::compute_hash(&context.checkout_path.join(&fs_file_path))?;
+
+                // Get hash from the VX state
+                let vx_hash = vx_files[vx_pos].blob.contenthash;
+
+                // If hashes don't match, file has changed
+                if fs_hash != vx_hash {
+                    // only copy if files are different, this might be slow but prevents recycling
+                    // inodes used by external file watchers
+                    vx_files[vx_pos]
+                        .blob
+                        .to_file(context, &fs_file_path)
+                        .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+                }
+
+                fs_pos += 1;
+                vx_pos += 1;
+            }
+            Ordering::Less => {
+                // fs < vx: added, advance fs
+                let fs_file_path = state.current_dir.join(fs_name);
+
+                // Delete the file from the filesystem
+                std::fs::remove_file(&fs_file_path)?;
+
+                fs_pos += 1;
+            }
+            Ordering::Greater => {
+                // fs > vx: deleted, advance vx
+                let fs_file_path = state.current_dir.join(vx_name);
+                vx_files[vx_pos]
+                    .blob
+                    .to_file(context, &fs_file_path)
+                    .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+
+                vx_pos += 1;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Materializes a folder without checking if it exists.
+/// This function is used when we know the folder doesn't exist and needs to be created.
+fn materialize_folder_without_checks(
+    context: &Context,
+    db: &Db,
+    hash: Digest,
+    abs_path: &Path,
+) -> Result<(), TreeError> {
+    std::fs::create_dir_all(&abs_path)?;
+
+    // Get the tree for this folder
+    let tree = treestore::get(db, hash)?;
+
+    // Create all subfolders
+    for folder in &tree.folders {
+        let folder_path = abs_path.join(&folder.name);
+        materialize_folder_without_checks(context, db, folder.hash, &folder_path)?;
+    }
+
+    // Create all files
+    for file in &tree.files {
+        let file_path = abs_path.join(&file.name);
+        file.blob
+            .to_file(context, &file_path)
+            .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+    }
+
+    Ok(())
 }

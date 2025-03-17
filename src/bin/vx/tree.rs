@@ -11,6 +11,10 @@ pub(super) struct TreeArgs {
 #[derive(Debug, Subcommand)]
 enum TreeCommands {
     Status,
+    Checkout {
+        /// The commit ID to checkout
+        commit_id: String,
+    },
 }
 
 pub(super) fn exec(args: &TreeArgs) {
@@ -19,6 +23,9 @@ pub(super) fn exec(args: &TreeArgs) {
     match &args.cmd {
         TreeCommands::Status => {
             status(&context);
+        }
+        TreeCommands::Checkout { commit_id } => {
+            checkout(&context, commit_id);
         }
     }
 }
@@ -45,5 +52,16 @@ fn status(context: &Context) {
             }
         }
         Err(e) => eprintln!("Failed to list changed files: {:?}", e),
+    }
+}
+
+fn checkout(context: &Context, commit_id: &str) {
+    match Tree::checkout(context, commit_id) {
+        Ok(()) => {
+            eprintln!("Successfully checked out commit: {}", commit_id);
+        }
+        Err(e) => {
+            eprintln!("Failed to checkout commit: {:?}", e);
+        }
     }
 }
