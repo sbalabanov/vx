@@ -6,6 +6,7 @@ use crate::core::common::{Digest, DigestExt};
 use crate::global::{DATA_FOLDER, TEMP_FOLDER};
 use crate::storage::commit::{self as commitstore};
 use crate::storage::tree::{self as treestore, TreeError};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sled::Db;
 use std::cmp::Ordering;
@@ -13,7 +14,6 @@ use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 
 /// Represents a folder content in a file tree.
-/// TODO: add required attributes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
     /// Hash of the folder content, i.e subfolders' and files' hashes.
@@ -22,7 +22,7 @@ pub struct Tree {
     pub folders: Vec<Folder>,
     /// Files in this folder, sorted alphabetically by name.
     pub files: Vec<File>,
-    /// Size of the files in the tree, recursively.
+    /// Total size of the files in the tree in bytes, recursively.
     pub size: u64,
     /// Number of files in the tree, recursively.
     pub file_count: u64,
@@ -31,7 +31,6 @@ pub struct Tree {
 }
 
 /// Represents a file in the file tree.
-/// TODO: add required attributes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
     /// Name of the file or folder.
@@ -91,7 +90,8 @@ impl Tree {
     /// Creates a new tree from the current directory recursively.
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
         let db = treestore::open(context)?;
-        let stats = persist_tree(context, &db, Path::new(""))?;
+        //let stats = persist_tree(context, &db, Path::new(""))?;
+        let stats = persist_tree_parallel(context, &db, Path::new(""))?;
         Ok(stats.hash)
     }
 
@@ -556,6 +556,97 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, Tr
         vx_files.push(vx_file);
     }
 
+    let tree = new_tree(
+        db,
+        vx_folders,
+        vx_files,
+        total_size,
+        total_file_count,
+        total_folder_count,
+    )?;
+
+    Ok(TreeStats {
+        hash: tree.hash,
+        size: total_size,
+        file_count: total_file_count,
+        folder_count: total_folder_count,
+    })
+}
+
+// Creates a tree from a directory, saving entities to storage on the go, using a configured
+// level of concurrency.
+fn persist_tree_parallel(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, TreeError> {
+    // Get the absolute path to work with
+    let abs_path = context.checkout_path.join(path);
+
+    // If it's a directory, process its contents
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    // Read directory entries
+    let mut entries = std::fs::read_dir(&abs_path)?;
+
+    // parse entries
+    parse_entries(&mut entries, &mut dirs, &mut files)?;
+
+    // Threshold for parallel processing - don't parallelize tiny directories
+    // Should be set at least to 2. In practice it does not seem to make much difference,
+    // most time consuming part is the IO bound file processing.
+    const PARALLEL_THRESHOLD: usize = 4;
+
+    // Process directories in parallel if there are enough of them
+    let folder_results: Vec<Result<(String, TreeStats), TreeError>> =
+        if dirs.len() >= PARALLEL_THRESHOLD {
+            dirs.par_iter()
+                .map(|dir| {
+                    let dir_path = path.join(dir);
+                    let stats = persist_tree_parallel(context, db, &dir_path)?;
+                    Ok((dir.clone(), stats))
+                })
+                .collect()
+        } else {
+            // Process sequentially for small number of directories
+            dirs.iter()
+                .map(|dir| {
+                    let dir_path = path.join(dir);
+                    let stats = persist_tree_parallel(context, db, &dir_path)?;
+                    Ok((dir.clone(), stats))
+                })
+                .collect()
+        };
+
+    // Process files sequentially (usually IO bound and less costly than directory traversal)
+    let mut vx_files: Vec<File> = Vec::with_capacity(files.len());
+    let mut total_size: u64 = 0;
+
+    for file in files.iter() {
+        let file_path = abs_path.join(file);
+        let vx_file = File::from_path(context, file.clone(), &file_path)?;
+        total_size += vx_file.blob.size;
+        vx_files.push(vx_file);
+    }
+
+    // Process folder results and create VX folders
+    let mut vx_folders = Vec::with_capacity(dirs.len());
+    let mut total_file_count: u64 = files.len() as u64;
+    let mut total_folder_count: u64 = dirs.len() as u64;
+
+    for result in folder_results {
+        let (dir_name, folder_stats) = result?;
+
+        // Update totals with subdirectory stats
+        total_size += folder_stats.size;
+        total_file_count += folder_stats.file_count;
+        total_folder_count += folder_stats.folder_count;
+
+        // Add folder to vx_folders with just the name and hash
+        vx_folders.push(Folder {
+            name: dir_name,
+            hash: folder_stats.hash,
+        });
+    }
+
+    // Create and store the tree
     let tree = new_tree(
         db,
         vx_folders,
