@@ -180,7 +180,7 @@ fn new_tree(
 // There are reasons we are not using recursive algorithm: it would be harder to debug a long stack and
 // harder to parallelize.
 fn traverse_tree(context: &Context, db: &Db, treehash: Digest) -> Result<Vec<Change>, TreeError> {
-    // start with root folder's tree and traverse down
+    // TODO: use mtime/size index and parallelize
 
     let mut changed_paths = Vec::new();
     let mut level = 1;
@@ -506,6 +506,7 @@ struct TreeStats {
 }
 
 // (UNOPTIMIZED) Creates a tree from a directory, saving entities to storage on the go
+#[allow(dead_code)]
 fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, TreeError> {
     // Unlike in get changes, here we go with the recursive algorithm. It will likely be
     // rewritten anyways so going with it for the sake of time.

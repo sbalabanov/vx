@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::commit::CommitID;
-use crate::storage::branch::{delete, get, get_by_name, list, new, BranchError};
+use crate::storage::branch::{get, get_by_name, list, new, BranchError};
 use crate::storage::commit;
 use serde::{Deserialize, Serialize};
 
@@ -65,10 +65,5 @@ impl Branch {
     /// Lists all branches from the database.
     pub fn list(context: &Context) -> Result<Vec<Branch>, BranchError> {
         list(context)
-    }
-
-    /// Deletes a branch from the database.
-    pub fn delete(context: &Context, name: &str) -> Result<(), BranchError> {
-        delete(context, name)
     }
 }

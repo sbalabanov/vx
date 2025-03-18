@@ -129,18 +129,3 @@ pub fn list(context: &Context) -> Result<Vec<Branch>, BranchError> {
     }
     Ok(branches)
 }
-
-/// Deletes branch by name.
-pub fn delete(context: &Context, name: &str) -> Result<(), BranchError> {
-    let id = xxh3_64(name.as_bytes());
-    // TODO: handle hash collisions.
-    let key = id.to_be_bytes();
-    let store = open(context)?;
-    match store.branch_tree.remove(key)? {
-        Some(_ivec) => {
-            store.branch_tree.flush()?;
-            Ok(())
-        }
-        None => Err(BranchError::NotFound),
-    }
-}

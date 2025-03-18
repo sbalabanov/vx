@@ -12,7 +12,6 @@ pub(super) struct BranchArgs {
 enum BranchCommands {
     New { name: String },
     List,
-    Delete { name: String },
 }
 pub(super) fn exec(args: &BranchArgs) {
     // TODO: Handle errors
@@ -23,9 +22,6 @@ pub(super) fn exec(args: &BranchArgs) {
         }
         BranchCommands::List => {
             list(&context);
-        }
-        BranchCommands::Delete { name } => {
-            delete(&context, name);
         }
     }
 }
@@ -46,12 +42,5 @@ fn list(context: &Context) {
             }
         }
         Err(e) => eprintln!("Failed to list branches: {:?}", e),
-    }
-}
-
-fn delete(context: &Context, name: &str) {
-    match Branch::delete(context, name) {
-        Ok(_) => eprintln!("Deleted branch '{}'", name),
-        Err(e) => eprintln!("Failed to delete branch: {:?}", e),
     }
 }
