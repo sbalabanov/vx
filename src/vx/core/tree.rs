@@ -90,8 +90,10 @@ impl Tree {
     /// Creates a new tree from the current directory recursively.
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
         let db = treestore::open(context)?;
+        let blob_db = Blob::open(context)
+            .map_err(|e| TreeError::Other(format!("Blob store error: {:?}", e)))?;
         //let stats = persist_tree(context, &db, Path::new(""))?;
-        let stats = persist_tree_parallel(context, &db, Path::new(""))?;
+        let stats = persist_tree_parallel(context, &db, &blob_db, Path::new(""))?;
         Ok(stats.hash)
     }
 
@@ -105,15 +107,6 @@ impl Tree {
         // Call the implementation function with the parsed values
         perform_checkout(context, commit_id)?;
         Ok(())
-    }
-}
-
-impl File {
-    pub fn from_path(context: &Context, name: String, path: &Path) -> Result<Self, TreeError> {
-        let blob = Blob::from_file(context, path)
-            .map_err(|e| TreeError::Other(format!("Blob error for path {:?}: {:?}", path, e)))?;
-        let file = Self { name: name, blob };
-        Ok(file)
     }
 }
 
@@ -136,6 +129,13 @@ pub struct Change {
     pub path: PathBuf,
     pub change_type: ChangeType,
     pub contenthash: Digest,
+}
+
+fn new_file(context: &Context, db_blob: &Db, name: String, path: &Path) -> Result<File, TreeError> {
+    let blob = Blob::from_file(context, db_blob, path)
+        .map_err(|e| TreeError::Other(format!("Blob error for path {:?}: {:?}", path, e)))?;
+    let file = File { name: name, blob };
+    Ok(file)
 }
 
 /// Creates a new tree with the specified contents, hashes it and saves to the database.
@@ -507,7 +507,12 @@ struct TreeStats {
 
 // (UNOPTIMIZED) Creates a tree from a directory, saving entities to storage on the go
 #[allow(dead_code)]
-fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, TreeError> {
+fn persist_tree(
+    context: &Context,
+    db: &Db,
+    blob_db: &Db,
+    path: &Path,
+) -> Result<TreeStats, TreeError> {
     // Unlike in get changes, here we go with the recursive algorithm. It will likely be
     // rewritten anyways so going with it for the sake of time.
 
@@ -534,7 +539,7 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, Tr
 
     for dir in dirs.into_iter() {
         // Recursively process subdirectory and get its stats
-        let folder_stats = persist_tree(context, db, &path.join(&dir))?;
+        let folder_stats = persist_tree(context, db, blob_db, &path.join(&dir))?;
 
         // Update totals with subdirectory stats
         total_size += folder_stats.size;
@@ -550,7 +555,7 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, Tr
 
     for file in files.into_iter() {
         let file_path = abs_path.join(&file);
-        let vx_file = File::from_path(context, file, &file_path)?;
+        let vx_file = new_file(context, blob_db, file.clone(), &file_path)?;
 
         total_size += vx_file.blob.size;
 
@@ -576,7 +581,12 @@ fn persist_tree(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, Tr
 
 // Creates a tree from a directory, saving entities to storage on the go, using a configured
 // level of concurrency.
-fn persist_tree_parallel(context: &Context, db: &Db, path: &Path) -> Result<TreeStats, TreeError> {
+fn persist_tree_parallel(
+    context: &Context,
+    db: &Db,
+    blob_db: &Db,
+    path: &Path,
+) -> Result<TreeStats, TreeError> {
     // Get the absolute path to work with
     let abs_path = context.checkout_path.join(path);
 
@@ -601,7 +611,7 @@ fn persist_tree_parallel(context: &Context, db: &Db, path: &Path) -> Result<Tree
             dirs.par_iter()
                 .map(|dir| {
                     let dir_path = path.join(dir);
-                    let stats = persist_tree_parallel(context, db, &dir_path)?;
+                    let stats = persist_tree_parallel(context, db, blob_db, &dir_path)?;
                     Ok((dir.clone(), stats))
                 })
                 .collect()
@@ -610,7 +620,7 @@ fn persist_tree_parallel(context: &Context, db: &Db, path: &Path) -> Result<Tree
             dirs.iter()
                 .map(|dir| {
                     let dir_path = path.join(dir);
-                    let stats = persist_tree_parallel(context, db, &dir_path)?;
+                    let stats = persist_tree_parallel(context, db, blob_db, &dir_path)?;
                     Ok((dir.clone(), stats))
                 })
                 .collect()
@@ -622,7 +632,7 @@ fn persist_tree_parallel(context: &Context, db: &Db, path: &Path) -> Result<Tree
 
     for file in files.iter() {
         let file_path = abs_path.join(file);
-        let vx_file = File::from_path(context, file.clone(), &file_path)?;
+        let vx_file = new_file(context, blob_db, file.clone(), &file_path)?;
         total_size += vx_file.blob.size;
         vx_files.push(vx_file);
     }
@@ -674,12 +684,13 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
 
     // Open the tree store
     let db = treestore::open(context)?;
-
+    let blob_db = Blob::open(context)
+        .map_err(|e| TreeError::Other(format!("Failed to open blob store: {:?}", e)))?;
     // Get the root tree from the commit
     let root_tree = treestore::get(&db, commit.treehash)?;
 
     // Recursively materialize the tree
-    materialize_tree(context, &db, root_tree.hash)?;
+    materialize_tree(context, &db, &blob_db, root_tree.hash)?;
 
     // Update the current commit
     commitstore::save_current(context, commit_id)
@@ -689,7 +700,12 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
 }
 
 /// Recursively materializes a tree, overwriting files if needed.
-fn materialize_tree(context: &Context, db: &Db, treehash: Digest) -> Result<(), TreeError> {
+fn materialize_tree(
+    context: &Context,
+    db: &Db,
+    blob_db: &Db,
+    treehash: Digest,
+) -> Result<(), TreeError> {
     // Pretty much a copy of traverse_tree
     // TODO: refactor to unify the code
 
@@ -735,12 +751,12 @@ fn materialize_tree(context: &Context, db: &Db, treehash: Digest) -> Result<(), 
                     let vx_dir = &state.vx_tree.folders[state.vx_pos];
                     let path = state.current_dir.join(&vx_dir.name);
 
-                    materialize_folder_without_checks(context, db, vx_dir.hash, &path)?;
+                    materialize_folder_without_checks(context, db, blob_db, vx_dir.hash, &path)?;
 
                     state.vx_pos += 1;
                 }
 
-                materialize_files(context, &state)?;
+                materialize_files(context, blob_db, &state)?;
 
                 // drill up
                 level -= 1;
@@ -755,7 +771,7 @@ fn materialize_tree(context: &Context, db: &Db, treehash: Digest) -> Result<(), 
                     state.fs_pos += 1;
                 }
 
-                materialize_files(context, &state)?;
+                materialize_files(context, blob_db, &state)?;
 
                 // drill up
                 level -= 1;
@@ -788,7 +804,7 @@ fn materialize_tree(context: &Context, db: &Db, treehash: Digest) -> Result<(), 
                 Ordering::Greater => {
                     // fs > vx: deleted, advance vx
                     let path = state.current_dir.join(&vx_dir.name);
-                    materialize_folder_without_checks(context, db, vx_dir.hash, &path)?;
+                    materialize_folder_without_checks(context, db, blob_db, vx_dir.hash, &path)?;
                     state.vx_pos += 1;
                     continue 'horizontal;
                 }
@@ -799,7 +815,7 @@ fn materialize_tree(context: &Context, db: &Db, treehash: Digest) -> Result<(), 
     Ok(())
 }
 
-fn materialize_files(context: &Context, state: &LevelState) -> Result<(), TreeError> {
+fn materialize_files(context: &Context, blob_db: &Db, state: &LevelState) -> Result<(), TreeError> {
     // pretty much a copy of process_files()
     // TODO: refactor to unify the code
 
@@ -818,9 +834,7 @@ fn materialize_files(context: &Context, state: &LevelState) -> Result<(), TreeEr
                 let vx_file = &vx_files[vx_pos];
                 let path = state.current_dir.join(&vx_file.name);
 
-                vx_file
-                    .blob
-                    .to_file(context, &path)
+                Blob::to_file(context, blob_db, vx_file.blob.contenthash, &path)
                     .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
 
                 vx_pos += 1;
@@ -862,10 +876,13 @@ fn materialize_files(context: &Context, state: &LevelState) -> Result<(), TreeEr
                 if fs_hash != vx_hash {
                     // only copy if files are different, this might be slow but prevents recycling
                     // inodes used by external file watchers
-                    vx_files[vx_pos]
-                        .blob
-                        .to_file(context, &fs_file_path)
-                        .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+                    Blob::to_file(
+                        context,
+                        blob_db,
+                        vx_files[vx_pos].blob.contenthash,
+                        &fs_file_path,
+                    )
+                    .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
                 }
 
                 fs_pos += 1;
@@ -883,10 +900,13 @@ fn materialize_files(context: &Context, state: &LevelState) -> Result<(), TreeEr
             Ordering::Greater => {
                 // fs > vx: deleted, advance vx
                 let fs_file_path = state.current_dir.join(vx_name);
-                vx_files[vx_pos]
-                    .blob
-                    .to_file(context, &fs_file_path)
-                    .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+                Blob::to_file(
+                    context,
+                    blob_db,
+                    vx_files[vx_pos].blob.contenthash,
+                    &fs_file_path,
+                )
+                .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
 
                 vx_pos += 1;
             }
@@ -901,6 +921,7 @@ fn materialize_files(context: &Context, state: &LevelState) -> Result<(), TreeEr
 fn materialize_folder_without_checks(
     context: &Context,
     db: &Db,
+    blob_db: &Db,
     hash: Digest,
     abs_path: &Path,
 ) -> Result<(), TreeError> {
@@ -912,14 +933,13 @@ fn materialize_folder_without_checks(
     // Create all subfolders
     for folder in &tree.folders {
         let folder_path = abs_path.join(&folder.name);
-        materialize_folder_without_checks(context, db, folder.hash, &folder_path)?;
+        materialize_folder_without_checks(context, db, blob_db, folder.hash, &folder_path)?;
     }
 
     // Create all files
     for file in &tree.files {
         let file_path = abs_path.join(&file.name);
-        file.blob
-            .to_file(context, &file_path)
+        Blob::to_file(context, blob_db, file.blob.contenthash, &file_path)
             .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
     }
 
