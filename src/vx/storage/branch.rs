@@ -1,7 +1,7 @@
 use crate::context::Context;
 use crate::core::branch::Branch;
 use crate::storage::BRANCHES_FILE_NAME;
-use sled::Tree;
+use sled::Db;
 use thiserror::Error;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -23,20 +23,17 @@ pub enum BranchError {
     #[error("Invalid branch name: {0}")]
     InvalidName(String),
 
+    #[error("Invalid parent branch: {0}")]
+    InvalidParent(String),
+
     #[error("{0}")]
     Other(String),
 }
 
-/// Structure to hold the branch tree.
-struct BranchStore {
-    branch_tree: Tree,
-}
-
 /// Opens branch store.
-fn open(context: &Context) -> Result<BranchStore, BranchError> {
+fn open(context: &Context) -> Result<Db, BranchError> {
     let db = sled::open(context.workspace_path.join(BRANCHES_FILE_NAME))?;
-    let branch_tree = db.open_tree("branches")?;
-    Ok(BranchStore { branch_tree })
+    Ok(db)
 }
 
 /// Creates a new branch.
@@ -47,7 +44,7 @@ pub fn new(
     parent: u64,
     parentseq: u64,
 ) -> Result<Branch, BranchError> {
-    let store = open(context)?;
+    let db = open(context)?;
 
     // Compute branch id as a 64-bit hash of the branch name using xxHash.
     let id = xxh3_64(name.as_bytes());
@@ -62,13 +59,10 @@ pub fn new(
     let value = bincode::serialize(&branch)?;
 
     // Attempt to atomically insert the branch only if no record with the same id exists.
-    let result =
-        store
-            .branch_tree
-            .compare_and_swap(key.clone(), None as Option<&[u8]>, Some(value))?;
+    let result = db.compare_and_swap(key.clone(), None as Option<&[u8]>, Some(value))?;
     match result {
         Ok(()) => {
-            store.branch_tree.flush()?;
+            db.flush()?;
             Ok(branch)
         }
         Err(e) => {
@@ -101,8 +95,8 @@ pub fn new(
 /// Gets branch by ID.
 pub fn get(context: &Context, id: u64) -> Result<Branch, BranchError> {
     let key = id.to_be_bytes();
-    let store = open(context)?;
-    match store.branch_tree.get(key)? {
+    let db = open(context)?;
+    match db.get(key)? {
         Some(ivec) => {
             let branch: Branch = bincode::deserialize(&ivec)?;
             Ok(branch)
@@ -120,12 +114,68 @@ pub fn get_by_name(context: &Context, name: &str) -> Result<Branch, BranchError>
 
 /// Lists all branches.
 pub fn list(context: &Context) -> Result<Vec<Branch>, BranchError> {
-    let store = open(context)?;
+    let db = open(context)?;
     let mut branches = Vec::new();
-    for item in store.branch_tree.iter() {
+    for item in db.iter() {
         let (_key, value) = item?;
         let branch: Branch = bincode::deserialize(&value)?;
         branches.push(branch);
     }
     Ok(branches)
+}
+
+/// Updates the head sequence number of a branch.
+pub fn update_headseq(
+    context: &Context,
+    branch_id: u64,
+    new_headseq: u64,
+) -> Result<Branch, BranchError> {
+    let db = open(context)?;
+    let key = branch_id.to_be_bytes();
+
+    // Create a mutable reference to store any error that happens in the closure
+    let mut closure_error: Option<BranchError> = None;
+    let mut closure_branch: Option<Branch> = None;
+
+    // update_and_fetch returns binary, so we save the actual error and branch in the closure
+    db.update_and_fetch(key, |current| {
+        if let Some(current_bytes) = current {
+            // Try to deserialize the branch
+            match bincode::deserialize::<Branch>(current_bytes) {
+                Ok(mut branch) => {
+                    branch.headseq = new_headseq; // Try to serialize the updated branch
+                    match bincode::serialize(&branch) {
+                        Ok(serialized) => {
+                            closure_branch = Some(branch);
+                            Some(serialized)
+                        }
+                        Err(err) => {
+                            // Store the serialization error
+                            closure_error = Some(BranchError::SerializationError(err));
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    // Store the deserialization error
+                    closure_error = Some(BranchError::SerializationError(err));
+                    None
+                }
+            }
+        } else {
+            // Branch not found
+            closure_error = Some(BranchError::NotFound);
+            None
+        }
+    })?;
+
+    // Check if an error occurred in the closure
+    if let Some(err) = closure_error {
+        return Err(err);
+    }
+
+    db.flush()?;
+
+    // If we got here, closure_branch should be Some(_)
+    Ok(closure_branch.unwrap())
 }

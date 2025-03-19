@@ -56,19 +56,23 @@ fn list(context: &Context) {
 }
 
 fn show(context: &Context, id: Option<u64>) {
-    let result = if let Some(commit_id) = id {
-        Commit::get_from_current_branch(context, commit_id)
-    } else {
-        // Show current commit when no ID is provided
-        Commit::get_current(context)
+    let result = match id {
+        Some(commit_id) => Commit::get_from_current_branch(context, commit_id),
+        None => {
+            // Show current commit when no ID is provided
+            Commit::get_current(context)
+        }
     };
 
-    if let Ok(commit) = result {
-        eprintln!(
-            "{}:{}\t{}\t{}\n",
-            commit.id.branch, commit.id.seq, commit.treehash, commit.message,
-        );
-    } else if let Err(e) = result {
-        eprintln!("Failed to show commit: {:?}", e);
+    match result {
+        Ok(commit) => {
+            eprintln!(
+                "{}:{}\t{}\t{}\n",
+                commit.id.branch, commit.id.seq, commit.treehash, commit.message,
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to show commit: {:?}", e);
+        }
     }
 }

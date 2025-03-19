@@ -16,6 +16,8 @@ pub struct CommitID {
 }
 
 impl CommitID {
+    pub(crate) const SEQ_ZERO: u64 = 0;
+
     /// Resolves a string in format "branch_name:seq" into a CommitID
     ///   - If spec is an integer, it's treated as a sequence number on the current branch
     ///   - Otherwise, it's treated as a branch name with the head sequence
@@ -65,6 +67,7 @@ pub struct Commit {
     /// The commit message.
     /// TODO: make it a blob?
     pub message: String,
+    // TODO: add author and other metadata
 }
 
 impl Commit {
@@ -83,7 +86,7 @@ impl Commit {
             return Err(CommitError::NoChanges);
         }
 
-        Self::new(
+        let commit = Commit::new(
             context,
             CommitID {
                 branch: commit_id.branch,
@@ -91,7 +94,16 @@ impl Commit {
             },
             treehash,
             message,
-        )
+        )?;
+
+        // TODO: potential race condition between new commit and branch update
+        // Current commit may be recorded before the branch really updates, so in case of a failure
+        // the current commit's seq will be ahead of the branch's headseq.
+
+        Branch::advance_head(context, commit.id.branch, commit.id.seq)
+            .map_err(|e| CommitError::Other(format!("Failed to advance branch head: {}", e)))?;
+
+        Ok(commit)
     }
 
     /// Lists all commits for the current branch.
@@ -115,9 +127,16 @@ impl Commit {
         commitstore::get(context, commit_id)
     }
 
+    /// Retrieves the current commit ID.
+    pub fn get_current_id(context: &Context) -> Result<CommitID, CommitError> {
+        commitstore::get_current(context)
+    }
+
     /// Retrieves the current commit.
     pub fn get_current(context: &Context) -> Result<Self, CommitError> {
         let commit_id = commitstore::get_current(context)?;
+        // TODO: process branch_id:0 current commits (i.e. new branch without commits).
+        // Either add a centinel commit or resolve to the branch's headseq.
         commitstore::get(context, commit_id)
     }
 

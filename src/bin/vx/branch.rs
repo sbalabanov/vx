@@ -28,7 +28,7 @@ pub(super) fn exec(args: &BranchArgs) {
 
 fn new(context: &Context, name: &str) {
     // TODO: current commit number
-    match Branch::new(context, name.to_string(), 0, 0, 0) {
+    match Branch::new(context, name.to_string()) {
         Ok(branch) => eprintln!("Created new branch: {:?}", branch.name),
         Err(e) => eprintln!("Failed to create new branch: {:?}", e),
     }
