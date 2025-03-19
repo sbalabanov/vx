@@ -1,10 +1,8 @@
 use crate::context::Context;
 use crate::core::blob::Blob;
-use crate::core::commit::Commit;
-use crate::core::commit::CommitID;
+use crate::core::commit::{Commit, CommitID};
 use crate::core::common::{Digest, DigestExt};
 use crate::global::{DATA_FOLDER, TEMP_FOLDER};
-use crate::storage::commit::{self as commitstore};
 use crate::storage::tree::{self as treestore, TreeError};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -77,10 +75,7 @@ impl Tree {
         // too high level, object creation overhead and can't properly traverse bottom up with filtering
 
         // get the commit to compare against, so far current commit
-        let commit_id = commitstore::get_current(context)
-            .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
-
-        let commit = Commit::get(context, commit_id)
+        let commit = Commit::get_current(context)
             .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
 
         let db = treestore::open(context)?;
@@ -693,7 +688,7 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
     materialize_tree(context, &db, &blob_db, root_tree.hash)?;
 
     // Update the current commit
-    commitstore::save_current(context, commit_id)
+    Commit::save_current(context, commit_id)
         .map_err(|e| TreeError::Other(format!("Failed to update current commit: {:?}", e)))?;
 
     Ok(())

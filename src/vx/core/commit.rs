@@ -68,19 +68,6 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// Creates a new Commit instance with the provided values, saves it to the commit store,
-    /// and updates the current branch and sequence number.
-    pub(crate) fn new(
-        context: &Context,
-        id: CommitID,
-        treehash: Digest,
-        message: String,
-    ) -> Result<Self, CommitError> {
-        let commit = commitstore::new(context, id.branch, id.seq, treehash, message)?;
-        commitstore::save_current(context, id)?;
-        Ok(commit)
-    }
-
     /// Creates a new commit.
     pub fn make(context: &Context, message: String) -> Result<Self, CommitError> {
         let commit_id = commitstore::get_current(context)?;
@@ -132,5 +119,23 @@ impl Commit {
     pub fn get_current(context: &Context) -> Result<Self, CommitError> {
         let commit_id = commitstore::get_current(context)?;
         commitstore::get(context, commit_id)
+    }
+
+    /// Creates a new Commit instance with the provided values, saves it to the commit store,
+    /// and updates the current branch and sequence number.
+    pub(crate) fn new(
+        context: &Context,
+        id: CommitID,
+        treehash: Digest,
+        message: String,
+    ) -> Result<Self, CommitError> {
+        let commit = commitstore::new(context, id.branch, id.seq, treehash, message)?;
+        commitstore::save_current(context, id)?;
+        Ok(commit)
+    }
+
+    /// Saves the current commit.
+    pub(crate) fn save_current(context: &Context, id: CommitID) -> Result<(), CommitError> {
+        commitstore::save_current(context, id)
     }
 }

@@ -1,7 +1,6 @@
 use crate::context::Context;
-use crate::core::commit::CommitID;
-use crate::storage::branch::{get, get_by_name, list, new, BranchError};
-use crate::storage::commit;
+use crate::core::commit::{Commit, CommitID};
+use crate::storage::branch::{self as branchstore, BranchError};
 use serde::{Deserialize, Serialize};
 
 /// Represents a branch in the version control system.
@@ -37,10 +36,10 @@ impl Branch {
                     .to_string(),
             ));
         }
-        let branch = new(context, name, headseq, parent, parentseq)?;
+        let branch = branchstore::new(context, name, headseq, parent, parentseq)?;
 
         // Set this as the current branch with commit sequence 0
-        commit::save_current(
+        Commit::save_current(
             context,
             CommitID {
                 branch: branch.id,
@@ -52,18 +51,13 @@ impl Branch {
         Ok(branch)
     }
 
-    /// Retrieves a branch from the database.
-    pub fn get(context: &Context, id: u64) -> Result<Branch, BranchError> {
-        get(context, id)
-    }
-
     /// Retrieves a branch from the database by name.
     pub fn get_by_name(context: &Context, name: &str) -> Result<Branch, BranchError> {
-        get_by_name(context, name)
+        branchstore::get_by_name(context, name)
     }
 
     /// Lists all branches from the database.
     pub fn list(context: &Context) -> Result<Vec<Branch>, BranchError> {
-        list(context)
+        branchstore::list(context)
     }
 }
