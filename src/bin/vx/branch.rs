@@ -13,34 +13,32 @@ enum BranchCommands {
     New { name: String },
     List,
 }
-pub(super) fn exec(args: &BranchArgs) {
-    // TODO: Handle errors
-    let context = Context::init().unwrap();
+pub(super) fn exec(args: &BranchArgs) -> Result<(), String> {
+    let context = Context::init().map_err(|err| format!("Error initializing context: {}", err))?;
     match &args.cmd {
-        BranchCommands::New { name } => {
-            new(&context, name);
-        }
-        BranchCommands::List => {
-            list(&context);
-        }
+        BranchCommands::New { name } => new(&context, name),
+        BranchCommands::List => list(&context),
     }
 }
 
-fn new(context: &Context, name: &str) {
-    // TODO: current commit number
+fn new(context: &Context, name: &str) -> Result<(), String> {
     match Branch::new(context, name.to_string()) {
-        Ok(branch) => eprintln!("Created new branch: {:?}", branch.name),
-        Err(e) => eprintln!("Failed to create new branch: {:?}", e),
+        Ok(branch) => {
+            eprintln!("Created new branch: {:?}", branch.name);
+            Ok(())
+        }
+        Err(e) => Err(format!("Failed to create new branch: {:?}", e)),
     }
 }
 
-fn list(context: &Context) {
+fn list(context: &Context) -> Result<(), String> {
     match Branch::list(context) {
         Ok(branches) => {
             for branch in branches {
                 eprintln!("Branch ID: {}, Name: {}", branch.id, branch.name);
             }
+            Ok(())
         }
-        Err(e) => eprintln!("Failed to list branches: {:?}", e),
+        Err(e) => Err(format!("Failed to list branches: {:?}", e)),
     }
 }

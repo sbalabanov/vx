@@ -25,13 +25,18 @@ enum Commands {
 }
 
 fn main() {
-    // TODO: proper error handling and binary protocol
-
     let cli = Cli::parse();
-    match &cli.cmd {
+    let result = match &cli.cmd {
         Commands::Branch(args) => branch::exec(args),
         Commands::Commit(args) => commit::exec(args),
         Commands::Repo(args) => repo::exec(args),
         Commands::Tree(args) => tree::exec(args),
+    };
+
+    if let Err(err) = result {
+        eprintln!("{}", err);
+
+        // TODO: binary protocol, i.e. exit code based on error type.
+        std::process::exit(1);
     }
 }

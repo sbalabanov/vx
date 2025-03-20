@@ -17,20 +17,15 @@ enum TreeCommands {
     },
 }
 
-pub(super) fn exec(args: &TreeArgs) {
-    // TODO: Handle errors
-    let context = Context::init().unwrap();
+pub(super) fn exec(args: &TreeArgs) -> Result<(), String> {
+    let context = Context::init().map_err(|err| format!("Error initializing context: {}", err))?;
     match &args.cmd {
-        TreeCommands::Status => {
-            status(&context);
-        }
-        TreeCommands::Checkout { commit_id } => {
-            checkout(&context, commit_id);
-        }
+        TreeCommands::Status => status(&context),
+        TreeCommands::Checkout { commit_id } => checkout(&context, commit_id),
     }
 }
 
-fn status(context: &Context) {
+fn status(context: &Context) -> Result<(), String> {
     match Tree::get_changed_files(context) {
         Ok(changes) => {
             if changes.is_empty() {
@@ -50,18 +45,18 @@ fn status(context: &Context) {
                     eprintln!("  {} {} {}", action_str, type_str, change.path.display());
                 }
             }
+            Ok(())
         }
-        Err(e) => eprintln!("Failed to list changed files: {:?}", e),
+        Err(e) => Err(format!("Failed to list changed files: {:?}", e)),
     }
 }
 
-fn checkout(context: &Context, commit_id: &str) {
+fn checkout(context: &Context, commit_id: &str) -> Result<(), String> {
     match Tree::checkout(context, commit_id) {
         Ok(()) => {
             eprintln!("Successfully checked out commit: {}", commit_id);
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("Failed to checkout commit: {:?}", e);
-        }
+        Err(e) => Err(format!("Failed to checkout commit: {:?}", e)),
     }
 }
