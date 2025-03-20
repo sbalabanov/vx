@@ -19,10 +19,10 @@ The test follows this workflow:
 7. **Create a new branch** - Tests the `branch new` command
 8. **Modify files** - Makes changes to existing files and adds new files
 9. **Commit changes on the feature branch** - Tests committing changes
-10. **Checkout the new commit** - Tests checking out the latest commit
-11. **Create another branch** - Tests creating another branch
-12. **Switch between commits** - Tests switching between commits/branches
-13. **Verify content** - Verifies that file content is consistent after switching
+10. **Switch to initial commit** - Tests switching back to the original commit
+11. **Verify initial commit content** - Ensures files match the expected state
+12. **Switch to feature branch commit** - Tests switching to the feature branch
+13. **Verify feature branch content** - Ensures files match the expected state
 
 ## Expected Outcomes
 
