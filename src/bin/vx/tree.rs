@@ -29,9 +29,9 @@ fn status(context: &Context) -> Result<(), String> {
     match Tree::get_changed_files(context) {
         Ok(changes) => {
             if changes.is_empty() {
-                eprintln!("No files changed since current commit");
+                println!("No files changed since current commit");
             } else {
-                eprintln!("Files changed since current commit:");
+                println!("Files changed since current commit:");
                 for change in changes {
                     let type_str = match change.change_type {
                         ChangeType::File => "file",
@@ -42,7 +42,7 @@ fn status(context: &Context) -> Result<(), String> {
                         ChangeAction::Deleted => "deleted",
                         ChangeAction::Modified => "modified",
                     };
-                    eprintln!("  {} {} {}", action_str, type_str, change.path.display());
+                    println!("  {} {} {}", action_str, type_str, change.path.display());
                 }
             }
             Ok(())
@@ -54,7 +54,7 @@ fn status(context: &Context) -> Result<(), String> {
 fn checkout(context: &Context, commit_id: &str) -> Result<(), String> {
     match Tree::checkout(context, commit_id) {
         Ok(()) => {
-            eprintln!("Successfully checked out commit: {}", commit_id);
+            println!("Successfully checked out commit: {}", commit_id);
             Ok(())
         }
         Err(e) => Err(format!("Failed to checkout commit: {:?}", e)),

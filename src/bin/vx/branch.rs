@@ -24,7 +24,7 @@ pub(super) fn exec(args: &BranchArgs) -> Result<(), String> {
 fn new(context: &Context, name: &str) -> Result<(), String> {
     match Branch::new(context, name.to_string()) {
         Ok(branch) => {
-            eprintln!("Created new branch: {:?}", branch.name);
+            println!("Created new branch: {:?}", branch.name);
             Ok(())
         }
         Err(e) => Err(format!("Failed to create new branch: {:?}", e)),
@@ -35,7 +35,7 @@ fn list(context: &Context) -> Result<(), String> {
     match Branch::list(context) {
         Ok(branches) => {
             for branch in branches {
-                eprintln!("Branch ID: {}, Name: {}", branch.id, branch.name);
+                println!("Branch ID: {}, Name: {}", branch.id, branch.name);
             }
             Ok(())
         }

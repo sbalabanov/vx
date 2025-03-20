@@ -22,7 +22,7 @@ pub(super) fn exec(args: &RepoArgs) -> Result<(), String> {
 fn new(name: &str) -> Result<(), String> {
     match Repo::new(name.to_string(), HashMap::new()) {
         Ok((repo, _)) => {
-            eprintln!("Created new repository: {}", repo.name);
+            println!("Created new repository: {}", repo.name);
             Ok(())
         }
         Err(e) => Err(format!("Failed to create new repository: {:?}", e)),

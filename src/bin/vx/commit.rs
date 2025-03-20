@@ -33,7 +33,7 @@ pub(super) fn exec(args: &CommitArgs) -> Result<(), String> {
 fn new(context: &Context, message: &str) -> Result<(), String> {
     match Commit::make(context, message.to_string()) {
         Ok(commit) => {
-            eprintln!("Created new commit: {} - {}", commit.id.seq, commit.message);
+            println!("Created new commit: {} - {}", commit.id.seq, commit.message);
             Ok(())
         }
         Err(e) => Err(format!("Failed to create new commit: {:?}", e)),
@@ -44,7 +44,7 @@ fn list(context: &Context) -> Result<(), String> {
     match Commit::list(context) {
         Ok(commits) => {
             for commit in commits {
-                eprintln!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message);
+                println!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message);
             }
             Ok(())
         }
@@ -60,7 +60,7 @@ fn show(context: &Context, id: Option<u64>) -> Result<(), String> {
 
     match result {
         Ok(commit) => {
-            eprintln!(
+            println!(
                 "{}:{}\t{}\t{}\n",
                 commit.id.branch, commit.id.seq, commit.treehash, commit.message,
             );
