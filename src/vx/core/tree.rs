@@ -1,7 +1,7 @@
 use crate::context::Context;
 use crate::core::blob::Blob;
 use crate::core::commit::{Commit, CommitID};
-use crate::core::common::{Digest, DigestExt};
+use crate::core::digest::{Digest, DigestExt};
 use crate::global::{DATA_FOLDER, TEMP_FOLDER};
 use crate::storage::tree::{self as treestore, TreeError};
 use rayon::prelude::*;

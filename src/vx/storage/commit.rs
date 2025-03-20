@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::commit::{Commit, CommitID};
-use crate::core::common::Digest;
+use crate::core::digest::Digest;
 use crate::storage::COMMITS_FILE_NAME;
 use sled::Tree;
 use std::io;

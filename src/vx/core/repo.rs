@@ -2,7 +2,7 @@ use crate::context::Context;
 use crate::core::branch::Branch;
 use crate::core::commit::{Commit, CommitID};
 use crate::core::tree::Tree;
-use crate::storage::repo::{self, RepoError};
+use crate::storage::repo::{self as repostore, RepoError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -30,7 +30,7 @@ impl Repo {
                     .to_string(),
             ));
         }
-        let (repo, context) = repo::new(name, metadata)?;
+        let (repo, context) = repostore::new(name, metadata)?;
 
         // Create a new empty tree for a centinel commit.
         let tree = Tree::create_empty(&context)

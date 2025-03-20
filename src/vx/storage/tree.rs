@@ -1,5 +1,5 @@
 use crate::context::Context;
-use crate::core::common::Digest;
+use crate::core::digest::Digest;
 use crate::core::tree::Tree as VxTree;
 use sled::Db;
 use thiserror::Error;

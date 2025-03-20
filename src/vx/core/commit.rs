@@ -1,9 +1,8 @@
-use crate::{
-    context::Context,
-    core::branch::Branch,
-    core::{common::Digest, tree::Tree},
-    storage::commit::{self as commitstore, CommitError},
-};
+use crate::context::Context;
+use crate::core::branch::Branch;
+use crate::core::digest::Digest;
+use crate::core::tree::Tree;
+use crate::storage::commit::{self as commitstore, CommitError};
 use serde::{Deserialize, Serialize};
 
 /// Identifier of a commit.

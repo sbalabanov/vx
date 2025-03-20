@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::blob::Blob;
-use crate::core::common::{Digest, DigestExt};
+use crate::core::digest::{Digest, DigestExt};
 use crate::storage::BLOBS_FOLDER_NAME;
 use sled::Db;
 use std::fs;
