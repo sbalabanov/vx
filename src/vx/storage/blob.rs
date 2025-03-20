@@ -137,10 +137,11 @@ pub fn to_file(
 pub fn get_blob_metadata(db: &Db, contenthash: Digest) -> Result<Blob, BlobError> {
     let key = contenthash.to_be_bytes();
 
-    if let Some(ivec) = db.get(key)? {
-        let blob: Blob = bincode::deserialize(&ivec)?;
-        Ok(blob)
-    } else {
-        Err(BlobError::BlobNotFound(contenthash.to_hex_string()))
+    match db.get(key)? {
+        Some(ivec) => {
+            let blob: Blob = bincode::deserialize(&ivec)?;
+            Ok(blob)
+        }
+        None => Err(BlobError::BlobNotFound(contenthash.to_hex_string())),
     }
 }

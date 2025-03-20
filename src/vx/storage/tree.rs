@@ -45,10 +45,11 @@ pub fn save(db: &Db, tree: &VxTree) -> Result<(), TreeError> {
 pub fn get(db: &Db, hash: Digest) -> Result<VxTree, TreeError> {
     let key = hash.to_be_bytes();
 
-    if let Some(ivec) = db.get(key)? {
-        let tree: VxTree = bincode::deserialize(&ivec)?;
-        Ok(tree)
-    } else {
-        Err(TreeError::TreeNotFound)
+    match db.get(key)? {
+        Some(ivec) => {
+            let tree: VxTree = bincode::deserialize(&ivec)?;
+            Ok(tree)
+        }
+        None => Err(TreeError::TreeNotFound),
     }
 }

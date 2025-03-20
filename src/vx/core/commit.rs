@@ -21,37 +21,45 @@ impl CommitID {
     ///   - If spec is an integer, it's treated as a sequence number on the current branch
     ///   - Otherwise, it's treated as a branch name with the head sequence
     pub fn resolve(context: &Context, spec: &str) -> Result<Self, CommitError> {
-        if let Some(pos) = spec.find(':') {
-            // Format is "branch_name:seq"
-            let branch_name = &spec[0..pos];
-            let seq_str = &spec[pos + 1..];
+        match spec.find(':') {
+            Some(pos) => {
+                // Format is "branch_name:seq"
+                let branch_name = &spec[0..pos];
+                let seq_str = &spec[pos + 1..];
 
-            let seq = seq_str
-                .parse::<u64>()
-                .map_err(|_| CommitError::Other(format!("Invalid sequence number: {}", seq_str)))?;
+                let seq = seq_str.parse::<u64>().map_err(|_| {
+                    CommitError::Other(format!("Invalid sequence number: {}", seq_str))
+                })?;
 
-            // Always look up branch by name
-            let branch = Branch::get_by_name(&context, branch_name)
-                .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
-            Ok(CommitID {
-                branch: branch.id,
-                seq,
-            })
-        } else if let Ok(seq) = spec.parse::<u64>() {
-            // No separator and spec is an integer - use as sequence on current branch
-            let current_commit_id = commitstore::get_current(context)?;
-            Ok(CommitID {
-                branch: current_commit_id.branch,
-                seq,
-            })
-        } else {
-            // No separator and spec is not an integer - treat as branch name
-            let branch = Branch::get_by_name(&context, spec)
-                .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
-            Ok(CommitID {
-                branch: branch.id,
-                seq: branch.headseq,
-            })
+                // Always look up branch by name
+                let branch = Branch::get_by_name(&context, branch_name)
+                    .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
+                Ok(CommitID {
+                    branch: branch.id,
+                    seq,
+                })
+            }
+            None => {
+                match spec.parse::<u64>() {
+                    Ok(seq) => {
+                        // No separator and spec is an integer - use as sequence on current branch
+                        let current_commit_id = commitstore::get_current(context)?;
+                        Ok(CommitID {
+                            branch: current_commit_id.branch,
+                            seq,
+                        })
+                    }
+                    Err(_) => {
+                        // No separator and spec is not an integer - treat as branch name
+                        let branch = Branch::get_by_name(&context, spec)
+                            .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
+                        Ok(CommitID {
+                            branch: branch.id,
+                            seq: branch.headseq,
+                        })
+                    }
+                }
+            }
         }
     }
 }

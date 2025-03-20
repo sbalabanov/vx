@@ -67,26 +67,27 @@ pub fn new(
         }
         Err(e) => {
             // A record with the same id already exists.
-            if let Some(existing_bytes) = e.current {
-                let existing_branch: Branch = bincode::deserialize(&existing_bytes)?;
-                if existing_branch.name == name {
-                    Err(BranchError::BranchExists(name))
-                } else {
-                    // TODO: Even if it is super rare, handle hash collisions properly.
-                    Err(BranchError::DatabaseError(sled::Error::Unsupported(
-                        format!(
-                            "Hash collision! Branch with id {} already exists under different name '{}'",
-                            branch.id, existing_branch.name
-                        ),
-                    )))
+            match e.current {
+                Some(existing_bytes) => {
+                    let existing_branch: Branch = bincode::deserialize(&existing_bytes)?;
+                    if existing_branch.name == name {
+                        Err(BranchError::BranchExists(name))
+                    } else {
+                        // TODO: Even if it is super rare, handle hash collisions properly.
+                        Err(BranchError::DatabaseError(sled::Error::Unsupported(
+                            format!(
+                                "Hash collision! Branch with id {} already exists under different name '{}'",
+                                branch.id, existing_branch.name
+                            ),
+                        )))
+                    }
                 }
-            } else {
-                Err(BranchError::DatabaseError(sled::Error::Unsupported(
+                None => Err(BranchError::DatabaseError(sled::Error::Unsupported(
                     format!(
                         "Branch with id {} already exists but existing record is unavailable",
                         branch.id
                     ),
-                )))
+                ))),
             }
         }
     }
@@ -139,33 +140,36 @@ pub fn update_headseq(
 
     // update_and_fetch returns binary, so we save the actual error and branch in the closure
     db.update_and_fetch(key, |current| {
-        if let Some(current_bytes) = current {
-            // Try to deserialize the branch
-            match bincode::deserialize::<Branch>(current_bytes) {
-                Ok(mut branch) => {
-                    branch.headseq = new_headseq; // Try to serialize the updated branch
-                    match bincode::serialize(&branch) {
-                        Ok(serialized) => {
-                            closure_branch = Some(branch);
-                            Some(serialized)
-                        }
-                        Err(err) => {
-                            // Store the serialization error
-                            closure_error = Some(BranchError::SerializationError(err));
-                            None
+        match current {
+            Some(current_bytes) => {
+                // Try to deserialize the branch
+                match bincode::deserialize::<Branch>(current_bytes) {
+                    Ok(mut branch) => {
+                        branch.headseq = new_headseq; // Try to serialize the updated branch
+                        match bincode::serialize(&branch) {
+                            Ok(serialized) => {
+                                closure_branch = Some(branch);
+                                Some(serialized)
+                            }
+                            Err(err) => {
+                                // Store the serialization error
+                                closure_error = Some(BranchError::SerializationError(err));
+                                None
+                            }
                         }
                     }
-                }
-                Err(err) => {
-                    // Store the deserialization error
-                    closure_error = Some(BranchError::SerializationError(err));
-                    None
+                    Err(err) => {
+                        // Store the deserialization error
+                        closure_error = Some(BranchError::SerializationError(err));
+                        None
+                    }
                 }
             }
-        } else {
-            // Branch not found
-            closure_error = Some(BranchError::NotFound);
-            None
+            None => {
+                // Branch not found
+                closure_error = Some(BranchError::NotFound);
+                None
+            }
         }
     })?;
 
