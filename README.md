@@ -25,6 +25,16 @@ Git has revolutionized version control systems, but it comes with several limita
 
 vx is a modern version control system designed to address many of Git's limitations while maintaining a familiar workflow. Here's how vx improves the version control experience:
 
+### Client-Server Architecture
+
+Unlike Git's fully distributed model, vx is designed with a client-server architecture:
+
+- The server stores the complete repository history and data
+- Clients retrieve only the data they need on demand
+- This approach eliminates unnecessary data storage on client machines
+- Optimized for large repositories where storing the full history locally is impractical
+- Reduces initial clone times and disk space requirements
+
 ### Simplified Branch Model
 
 vx uses a straightforward branch model with intuitive semantics:
