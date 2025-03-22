@@ -26,6 +26,11 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+
+    // It is possible to pass args' ownership to the command's executor and potentially reuse
+    // data without cloning, but this will put some constraints on further evolution of the CLI code,
+    // so use cloning for now which should not be a big deal and may be also optimized away.
+
     let result = match &cli.cmd {
         Commands::Branch(args) => branch::exec(args),
         Commands::Commit(args) => commit::exec(args),

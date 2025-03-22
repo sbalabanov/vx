@@ -110,6 +110,44 @@ impl Commit {
         Branch::advance_head(context, commit.id.branch, commit.id.seq)
             .map_err(|e| CommitError::Other(format!("Failed to advance branch head: {}", e)))?;
 
+        // TODO: handle rebase if commit is in the middle of a branch
+
+        Ok(commit)
+    }
+
+    /// Amends the current commit with a new tree and optionally a new message.
+    /// If no message is provided, the existing message is preserved.
+    pub fn amend(context: &Context, message: Option<String>) -> Result<Self, CommitError> {
+        // Get the current commit
+        let current_commit = Commit::get_current(context)?;
+
+        // Generate a new tree hash from the current working directory
+        let treehash = Tree::create(context)
+            .map_err(|e| CommitError::Other(format!("Tree error: {:?}", e)))?;
+
+        // If no changes to the tree and the message remains the same, return NoChanges error
+        if current_commit.treehash == treehash
+            && (message.is_none() || message.as_ref() == Some(&current_commit.message))
+        {
+            return Err(CommitError::NoChanges);
+        }
+
+        // Use the new message if provided, otherwise keep the existing one
+        let commit_message = message.unwrap_or_else(|| current_commit.message.clone());
+
+        // Create a new commit with the same ID as the current one
+        let commit = commitstore::new(
+            context,
+            current_commit.id.branch,
+            current_commit.id.seq,
+            treehash,
+            commit_message,
+        )?;
+
+        // No need to update current commit pointer since we're using the same ID
+
+        // TODO: handle rebase if commit is in the middle of a branch
+
         Ok(commit)
     }
 

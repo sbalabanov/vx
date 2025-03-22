@@ -19,19 +19,23 @@ enum CommitCommands {
         #[arg(default_value = None)]
         id: Option<u64>,
     },
+    Amend {
+        message: Option<String>,
+    },
 }
 
 pub(super) fn exec(args: &CommitArgs) -> Result<(), String> {
     let context = Context::init().map_err(|err| format!("Error initializing context: {}", err))?;
     match &args.cmd {
-        CommitCommands::New { message } => new(&context, message),
+        CommitCommands::New { message } => new(&context, message.clone()),
         CommitCommands::List => list(&context),
         CommitCommands::Show { id } => show(&context, *id),
+        CommitCommands::Amend { message } => amend(&context, message.clone()),
     }
 }
 
-fn new(context: &Context, message: &str) -> Result<(), String> {
-    match Commit::make(context, message.to_string()) {
+fn new(context: &Context, message: String) -> Result<(), String> {
+    match Commit::make(context, message) {
         Ok(commit) => {
             println!("Created new commit: {} - {}", commit.id.seq, commit.message);
             Ok(())
@@ -67,5 +71,15 @@ fn show(context: &Context, id: Option<u64>) -> Result<(), String> {
             Ok(())
         }
         Err(e) => Err(format!("Failed to show commit: {:?}", e)),
+    }
+}
+
+fn amend(context: &Context, message: Option<String>) -> Result<(), String> {
+    match Commit::amend(context, message) {
+        Ok(commit) => {
+            println!("Amended commit: {} - {}", commit.id.seq, commit.message);
+            Ok(())
+        }
+        Err(e) => Err(format!("Failed to amend commit: {:?}", e)),
     }
 }
