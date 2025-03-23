@@ -208,12 +208,19 @@ pub fn list(
             seq: current_seq,
         });
 
-        if let Some(ivec) = commit_tree.get(key)? {
-            let commit_versions: Vec<Commit> = bincode::deserialize(&ivec)?;
+        match commit_tree.get(key)? {
+            Some(ivec) => {
+                let commit_versions: Vec<Commit> = bincode::deserialize(&ivec)?;
 
-            // Find the first commit with version <= branch_ver
-            if let Some(commit) = commit_versions.into_iter().find(|c| c.ver <= branch_ver) {
-                commits.push(commit);
+                // Find the first commit with version <= branch_ver
+                if let Some(commit) = commit_versions.into_iter().find(|c| c.ver <= branch_ver) {
+                    commits.push(commit);
+                } else {
+                    return Err(CommitError::NotFound);
+                }
+            }
+            None => {
+                return Err(CommitError::NotFound);
             }
         }
 
