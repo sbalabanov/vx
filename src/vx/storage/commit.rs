@@ -199,7 +199,7 @@ pub fn list(
     // Start from the head commit and work backwards
     let mut current_seq = branch_headseq;
 
-    while current_seq > 0 {
+    loop {
         // TODO: this is technically parallelizable but we'll likely change the return type to be
         // iterator in the future anyways.
 
@@ -217,6 +217,9 @@ pub fn list(
             }
         }
 
+        if current_seq == 0 {
+            break;
+        }
         current_seq -= 1;
     }
 

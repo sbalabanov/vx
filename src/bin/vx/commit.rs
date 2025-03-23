@@ -48,7 +48,10 @@ fn list(context: &Context) -> Result<(), String> {
     match Commit::list(context) {
         Ok(commits) => {
             for commit in commits {
-                println!("{}:{}\t{}", commit.id.branch, commit.id.seq, commit.message);
+                println!(
+                    "{}:{}\tv{}\t{}",
+                    commit.id.branch, commit.id.seq, commit.ver, commit.message
+                );
             }
             Ok(())
         }
@@ -65,8 +68,8 @@ fn show(context: &Context, id: Option<u64>) -> Result<(), String> {
     match result {
         Ok(commit) => {
             println!(
-                "{}:{}\t{}\t{}\n",
-                commit.id.branch, commit.id.seq, commit.treehash, commit.message,
+                "{}:{}\t{}\tv{}\t{}\n",
+                commit.id.branch, commit.id.seq, commit.treehash, commit.ver, commit.message,
             );
             Ok(())
         }

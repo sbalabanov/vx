@@ -35,7 +35,10 @@ fn list(context: &Context) -> Result<(), String> {
     match Branch::list(context) {
         Ok(branches) => {
             for branch in branches {
-                println!("Branch ID: {}, Name: {}", branch.id, branch.name);
+                println!(
+                    "Branch ID: {}, Name: {}, Version: {}",
+                    branch.id, branch.name, branch.ver
+                );
             }
             Ok(())
         }
