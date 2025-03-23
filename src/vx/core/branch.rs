@@ -12,6 +12,8 @@ pub struct Branch {
     pub name: String,
     /// Sequence number of the head commit in this branch.
     pub headseq: u64,
+    /// Version of the branch, each change increases version.
+    pub ver: u32,
     /// Identifier of the parent branch from which this branch was created.
     pub parent: u64,
     /// Sequence number of the parent's commit at the time of branch creation.
@@ -50,16 +52,11 @@ impl Branch {
         // create a centinel commit for the new branch by copying the current commit.
         // TODO: potential race condition here, we have a branch but no commit yet. By design every branch
         // must have at least one commit.
-        let branch_commit = Commit::new(
-            context,
-            CommitID {
-                branch: branch.id,
-                seq: CommitID::SEQ_ZERO,
-            },
-            commit.treehash,
-            commit.message,
-        )
-        .map_err(|e| BranchError::Other(format!("Failed to create centinel commit: {}", e)))?;
+        let branch_commit =
+            Commit::create_zero_commit(context, branch.id, commit.treehash, commit.message)
+                .map_err(|e| {
+                    BranchError::Other(format!("Failed to create centinel commit: {}", e))
+                })?;
 
         Commit::save_current(context, branch_commit.id)
             .map_err(|e| BranchError::Other(format!("Failed to set current branch: {}", e)))?;
@@ -80,6 +77,11 @@ impl Branch {
     /// Lists all branches from the database.
     pub fn list(context: &Context) -> Result<Vec<Branch>, BranchError> {
         branchstore::list(context)
+    }
+
+    /// Retrieves a branch from the database by ID.
+    pub fn get(context: &Context, id: u64) -> Result<Branch, BranchError> {
+        branchstore::get(context, id)
     }
 
     /// Creates a foundational branch, i.e. the one that is not based on any other branch.
@@ -107,8 +109,9 @@ impl Branch {
         context: &Context,
         branch_id: u64,
         new_headseq: u64,
+        new_ver: u32,
     ) -> Result<Branch, BranchError> {
-        branchstore::update_headseq(context, branch_id, new_headseq)
+        branchstore::update_headseq(context, branch_id, new_headseq, new_ver)
     }
 }
 

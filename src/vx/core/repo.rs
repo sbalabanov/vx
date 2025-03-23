@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::branch::Branch;
-use crate::core::commit::{Commit, CommitID};
+use crate::core::commit::Commit;
 use crate::core::tree::Tree;
 use crate::storage::repo::{self as repostore, RepoError};
 use serde::{Deserialize, Serialize};
@@ -44,12 +44,9 @@ impl Repo {
         // must have at least one commit. For now we will solve it by advising the user to trash the repo and start over.
 
         // Create a centinel commit with empty tree.
-        let commit = Commit::new(
+        let commit = Commit::create_zero_commit(
             &context,
-            CommitID {
-                branch: branch.id,
-                seq: CommitID::SEQ_ZERO, // zero as a sentinel, first user commit will start from 1
-            },
+            branch.id,
             tree.hash,
             String::from("Initial commit"),
         )

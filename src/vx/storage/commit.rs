@@ -46,37 +46,111 @@ fn open_tree(context: &Context, name: &str) -> Result<Tree, CommitError> {
 /// Creates a new commit.
 pub fn new(
     context: &Context,
-    branch: u64,
-    seq: u64,
+    commit_id: CommitID,
+    ver: u32,
     treehash: Digest,
     message: String,
 ) -> Result<Commit, CommitError> {
     let commit_tree = open_tree(context, COMMITS_TREE)?;
 
     let commit = Commit {
-        id: CommitID { branch, seq },
+        id: commit_id,
         treehash,
         message,
+        ver,
     };
 
     // Use branch ID and sequence number as composite key
     let key = compose_key(commit.id);
-    let value = bincode::serialize(&commit)?;
 
-    commit_tree.insert(key, value)?;
+    // Create a mutable reference to store any error that happens in the closure
+    let mut closure_error: Option<CommitError> = None;
+
+    // We use branch and sequence number to identify a commit, however we also need to track
+    // old commits to support undo and eventual consistent states when branch is rebuilt. Thus we store a list
+    // of all commits with the same id for each branch, sorted by commit version. Sled does not have
+    // a built-in way to store arrays, so we have to serialize/deserialize the entire array on each
+    // update. It is possible in the future to either use RocksDB or implement a separate table to store
+    // historical commit records.
+    commit_tree.update_and_fetch(key, |existing| {
+        match existing {
+            Some(existing_bytes) => {
+                // Try to deserialize existing commits array
+                match bincode::deserialize::<Vec<Commit>>(existing_bytes) {
+                    Ok(mut commits) => {
+                        // Sort by version in descending order
+                        // The array is already sorted by version in descending order
+                        // Check if the new commit should be at the beginning (most common case)
+                        // If we got here, there should be at least one commit in the array.
+                        if commit.ver > commits[0].ver {
+                            commits.insert(0, commit.clone());
+                        } else {
+                            // Find the correct position using binary search
+                            match commits.binary_search_by(|c| commit.ver.cmp(&c.ver)) {
+                                Ok(pos) => {
+                                    // found commit with the same version, most likely a previous
+                                    // failing attempt to rebuild a branch; safe to overwrite
+                                    commits[pos] = commit.clone();
+                                }
+                                Err(pos) => {
+                                    commits.insert(pos, commit.clone());
+                                }
+                            }
+                        }
+
+                        // Serialize the updated array
+                        match bincode::serialize(&commits) {
+                            Ok(serialized) => Some(serialized),
+                            Err(err) => {
+                                closure_error = Some(CommitError::SerializationError(err));
+                                None
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        closure_error = Some(CommitError::SerializationError(err));
+                        None
+                    }
+                }
+            }
+            None => {
+                // No existing commits for this key, create a new array with just this commit
+                let commits = vec![commit.clone()];
+                match bincode::serialize(&commits) {
+                    Ok(serialized) => Some(serialized),
+                    Err(err) => {
+                        closure_error = Some(CommitError::SerializationError(err));
+                        None
+                    }
+                }
+            }
+        }
+    })?;
+
+    // Check if an error occurred in the closure
+    if let Some(err) = closure_error {
+        return Err(err);
+    }
+
     commit_tree.flush()?;
     Ok(commit)
 }
 
-/// Gets commit info by commit ID.
-pub fn get(context: &Context, commit_id: CommitID) -> Result<Commit, CommitError> {
+/// Gets commit info by commit ID, with version no greater than specified.
+pub fn get(context: &Context, commit_id: CommitID, ver: u32) -> Result<Commit, CommitError> {
     let key = compose_key(commit_id);
     let commit_tree = open_tree(context, COMMITS_TREE)?;
 
     match commit_tree.get(key)? {
         Some(ivec) => {
-            let commit: Commit = bincode::deserialize(&ivec)?;
-            Ok(commit)
+            let commits: Vec<Commit> = bincode::deserialize(&ivec)?;
+
+            // Since commits are already sorted by descending version,
+            // find the first commit with version <= ver
+            commits
+                .into_iter()
+                .find(|c| c.ver <= ver)
+                .ok_or(CommitError::NotFound)
         }
         None => Err(CommitError::NotFound),
     }
@@ -113,27 +187,38 @@ fn compose_key(commit_id: CommitID) -> [u8; 16] {
 }
 
 /// Lists all commits for a given branch.
-pub fn list(context: &Context, branch: u64) -> Result<Vec<Commit>, CommitError> {
+pub fn list(
+    context: &Context,
+    branch_id: u64,
+    branch_ver: u32,
+    branch_headseq: u64,
+) -> Result<Vec<Commit>, CommitError> {
     let commit_tree = open_tree(context, COMMITS_TREE)?;
-    let mut commits = Vec::new();
+    let mut commits = Vec::with_capacity(16);
 
-    // TODO: smarter and faster retrieval
-    for result in commit_tree.iter() {
-        let (key, value) = result?;
-        let (key_branch, _) = decompose_key(&key);
+    // Start from the head commit and work backwards
+    let mut current_seq = branch_headseq;
 
-        if key_branch == branch {
-            let commit: Commit = bincode::deserialize(&value)?;
-            commits.push(commit);
+    while current_seq > 0 {
+        // TODO: this is technically parallelizable but we'll likely change the return type to be
+        // iterator in the future anyways.
+
+        let key = compose_key(CommitID {
+            branch: branch_id,
+            seq: current_seq,
+        });
+
+        if let Some(ivec) = commit_tree.get(key)? {
+            let commit_versions: Vec<Commit> = bincode::deserialize(&ivec)?;
+
+            // Find the first commit with version <= branch_ver
+            if let Some(commit) = commit_versions.into_iter().find(|c| c.ver <= branch_ver) {
+                commits.push(commit);
+            }
         }
+
+        current_seq -= 1;
     }
 
     Ok(commits)
-}
-
-/// Helper function to decompose composite key into branch ID and sequence number
-fn decompose_key(key: &[u8]) -> (u64, u64) {
-    let branch = u64::from_be_bytes(key[..8].try_into().unwrap());
-    let seq = u64::from_be_bytes(key[8..].try_into().unwrap());
-    (branch, seq)
 }

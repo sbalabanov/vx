@@ -35,7 +35,7 @@ pub(super) fn exec(args: &CommitArgs) -> Result<(), String> {
 }
 
 fn new(context: &Context, message: String) -> Result<(), String> {
-    match Commit::make(context, message) {
+    match Commit::new(context, message) {
         Ok(commit) => {
             println!("Created new commit: {} - {}", commit.id.seq, commit.message);
             Ok(())

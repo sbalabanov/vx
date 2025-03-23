@@ -54,6 +54,7 @@ pub fn new(
         headseq,
         parent,
         parentseq,
+        ver: 0,
     };
     let key = branch.id.to_be_bytes().to_vec();
     let value = bincode::serialize(&branch)?;
@@ -130,6 +131,7 @@ pub fn update_headseq(
     context: &Context,
     branch_id: u64,
     new_headseq: u64,
+    new_ver: u32,
 ) -> Result<Branch, BranchError> {
     let db = open(context)?;
     let key = branch_id.to_be_bytes();
@@ -146,6 +148,7 @@ pub fn update_headseq(
                 match bincode::deserialize::<Branch>(current_bytes) {
                     Ok(mut branch) => {
                         branch.headseq = new_headseq; // Try to serialize the updated branch
+                        branch.ver = new_ver;
                         match bincode::serialize(&branch) {
                             Ok(serialized) => {
                                 closure_branch = Some(branch);

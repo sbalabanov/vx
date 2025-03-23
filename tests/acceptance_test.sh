@@ -126,6 +126,27 @@ else
     exit 1
 fi
 
+# Step 13: Test commit amend functionality
+print_step "13. Testing commit amend functionality"
+# Modify a file and create a new file for amend
+echo "Additional content for amend" >> file1.txt
+echo "New file for amend" > amend-test-file.txt
+check_success "Modify files for amend"
+
+# Run commit amend
+AMEND_OUTPUT=$("$VX_PATH" commit amend "Amended commit message")
+echo "$AMEND_OUTPUT"
+check_success "Run commit amend command"
+
+# Verify the content and commit message after amend
+COMMIT_MSG=$("$VX_PATH" commit show | grep "Amended commit message")
+if grep -q "Additional content for amend" file1.txt && [ -f amend-test-file.txt ] && [ -n "$COMMIT_MSG" ]; then
+    echo -e "${GREEN}SUCCESS: Commit was successfully amended with new content and message${NC}"
+else
+    echo -e "${RED}FAILED: Commit amend verification failed${NC}"
+    exit 1
+fi
+
 # Clean up
 print_step "Cleaning up"
 cd -
