@@ -13,11 +13,15 @@ enum CommitCommands {
     New {
         message: String,
     },
-    List,
-    Show {
-        // TODO: proper commit spec, i.e. branch:seq
+    List {
+        // Optional branch name to list commits from
         #[arg(default_value = None)]
-        id: Option<u64>,
+        branch: Option<String>,
+    },
+    Show {
+        // Commit specification in format "branch_name:seq" or just "seq" or "branch_name"
+        #[arg(default_value = None)]
+        spec: Option<String>,
     },
     Amend {
         message: Option<String>,
@@ -28,8 +32,8 @@ pub(super) fn exec(args: &CommitArgs) -> Result<(), String> {
     let context = Context::init().map_err(|err| format!("Error initializing context: {}", err))?;
     match &args.cmd {
         CommitCommands::New { message } => new(&context, message.clone()),
-        CommitCommands::List => list(&context),
-        CommitCommands::Show { id } => show(&context, *id),
+        CommitCommands::List { branch } => list(&context, branch.clone()),
+        CommitCommands::Show { spec } => show(&context, spec.clone()),
         CommitCommands::Amend { message } => amend(&context, message.clone()),
     }
 }
@@ -44,24 +48,29 @@ fn new(context: &Context, message: String) -> Result<(), String> {
     }
 }
 
-fn list(context: &Context) -> Result<(), String> {
-    match Commit::list(context) {
-        Ok(commits) => {
-            for commit in commits {
-                println!(
-                    "{}:{}\tv{}\t{}",
-                    commit.id.branch, commit.id.seq, commit.ver, commit.message
-                );
-            }
-            Ok(())
-        }
-        Err(e) => Err(format!("Failed to list commits: {:?}", e)),
+fn list(context: &Context, branch: Option<String>) -> Result<(), String> {
+    let commits = match branch {
+        Some(branch_name) => Commit::list_by_branch(context, &branch_name).map_err(|e| {
+            format!(
+                "Failed to list commits for branch '{}': {:?}",
+                branch_name, e
+            )
+        })?,
+        None => Commit::list(context).map_err(|e| format!("Failed to list commits: {:?}", e))?,
+    };
+
+    for commit in commits {
+        println!(
+            "{}:{}\tv{}\t{}",
+            commit.id.branch, commit.id.seq, commit.ver, commit.message
+        );
     }
+    Ok(())
 }
 
-fn show(context: &Context, id: Option<u64>) -> Result<(), String> {
-    let result = match id {
-        Some(commit_id) => Commit::get_from_current_branch(context, commit_id),
+fn show(context: &Context, spec: Option<String>) -> Result<(), String> {
+    let result = match spec {
+        Some(commit_spec) => Commit::get_by_spec(context, &commit_spec),
         None => Commit::get_current(context),
     };
 

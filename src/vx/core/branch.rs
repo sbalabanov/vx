@@ -64,6 +64,16 @@ impl Branch {
         Ok(branch)
     }
 
+    /// Retrieves the current branch based on the current commit.
+    pub fn get_current(context: &Context) -> Result<Self, BranchError> {
+        // Get the current commit to find out which branch we're on
+        let current_commit = Commit::get_current(context)
+            .map_err(|e| BranchError::Other(format!("Failed to get current commit: {}", e)))?;
+
+        // Retrieve the branch using the branch ID from the current commit
+        Self::get(context, current_commit.id.branch)
+    }
+
     /// Checks if this branch is the foundational branch (not based on any other branch).
     pub fn is_foundational(&self) -> bool {
         self.parent == FOUNDATIONAL_ID

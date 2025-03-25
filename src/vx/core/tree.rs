@@ -60,15 +60,6 @@ fn default_tree() -> Tree {
 }
 
 impl Tree {
-    /// Creates a new empty tree and saves it to the database.
-    pub fn create_empty(context: &Context) -> Result<Self, TreeError> {
-        let db = treestore::open(context)?;
-        let tree = new_tree(&db, Vec::new(), Vec::new(), 0, 0, 0)?;
-        treestore::save(&db, &tree)?;
-        db.flush()?;
-        Ok(tree)
-    }
-
     /// Get the changes between current tree and the latest commit.
     pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, TreeError> {
         // sergeyb: tried to use walkdir, but it's not working as expected
@@ -102,6 +93,15 @@ impl Tree {
         // Call the implementation function with the parsed values
         perform_checkout(context, commit_id)?;
         Ok(())
+    }
+
+    /// Creates a new empty tree and saves it to the database.
+    pub(crate) fn create_empty(context: &Context) -> Result<Self, TreeError> {
+        let db = treestore::open(context)?;
+        let tree = new_tree(&db, Vec::new(), Vec::new(), 0, 0, 0)?;
+        treestore::save(&db, &tree)?;
+        db.flush()?;
+        Ok(tree)
     }
 }
 

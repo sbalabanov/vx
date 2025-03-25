@@ -181,6 +181,23 @@ impl Commit {
         commitstore::list(context, branch.id, branch.ver, branch.headseq)
     }
 
+    /// Lists all commits for the specified branch.
+    ///
+    /// # Arguments
+    /// * `context` - The context
+    /// * `branch_name` - The name of the branch to list commits for
+    ///
+    /// # Returns
+    /// A vector of commits in the branch, sorted by sequence number
+    pub fn list_by_branch(context: &Context, branch_name: &str) -> Result<Vec<Self>, CommitError> {
+        // Resolve branch name to branch object
+        let branch = Branch::get_by_name(context, branch_name)
+            .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
+
+        // Use the existing list method with the branch's id, version, and head sequence
+        commitstore::list(context, branch.id, branch.ver, branch.headseq)
+    }
+
     /// Retrieves a specific commit by id.
     pub fn get(context: &Context, id: CommitID) -> Result<Self, CommitError> {
         let branch = Branch::get(context, id.branch)
@@ -192,10 +209,8 @@ impl Commit {
     /// Retrieves a specific commit by id.
     pub fn get_from_current_branch(context: &Context, seq: u64) -> Result<Self, CommitError> {
         let mut commit_id = commitstore::get_current(context)?;
-        let branch = Branch::get(context, commit_id.branch)
-            .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
         commit_id.seq = seq;
-        commitstore::get(context, commit_id, branch.ver)
+        Self::get(context, commit_id)
     }
 
     /// Retrieves the current commit.
@@ -206,6 +221,16 @@ impl Commit {
         // TODO: process branch_id:0 current commits (i.e. new branch without commits).
         // Either add a centinel commit or resolve to the branch's headseq.
         commitstore::get(context, commit_id, branch.ver)
+    }
+
+    /// Retrieves a commit by its specification string.
+    /// Supports formats:
+    ///   - "branch_name:seq" - Specific sequence on named branch
+    ///   - "seq" - Specific sequence on current branch
+    ///   - "branch_name" - Head commit on named branch
+    pub fn get_by_spec(context: &Context, spec: &str) -> Result<Self, CommitError> {
+        let commit_id = CommitID::resolve(context, spec)?;
+        Self::get(context, commit_id)
     }
 
     /// Creates a new Commit instance which should start a branch and save it to the store.
