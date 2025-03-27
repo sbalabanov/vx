@@ -13,7 +13,7 @@ pub struct Branch {
     /// Sequence number of the head commit in this branch.
     pub headseq: u64,
     /// Version of the branch, each change increases version.
-    pub ver: u32,
+    pub ver: u64,
     /// Identifier of the parent branch from which this branch was created.
     pub parent: u64,
     /// Sequence number of the parent's commit at the time of branch creation.
@@ -119,7 +119,7 @@ impl Branch {
         context: &Context,
         branch_id: u64,
         new_headseq: u64,
-        new_ver: u32,
+        new_ver: u64,
     ) -> Result<Branch, BranchError> {
         branchstore::update_headseq(context, branch_id, new_headseq, new_ver)
     }

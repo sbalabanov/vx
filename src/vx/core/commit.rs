@@ -4,6 +4,7 @@ use crate::core::digest::Digest;
 use crate::core::tree::Tree;
 use crate::storage::commit::{self as commitstore, CommitError};
 use serde::{Deserialize, Serialize};
+use xxhash_rust::xxh3::Xxh3;
 
 /// Identifier of a commit.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -70,7 +71,9 @@ pub struct Commit {
     // Identifier of a commit.
     pub id: CommitID,
     // Version of the branch the commit belongs to, each change increases version.
-    pub ver: u32,
+    pub ver: u64,
+    // Hash of the commit, includes the tree hash and metadata.
+    pub hash: Digest,
     /// The hash of the file tree root associated with the commit.
     pub treehash: Digest,
     /// The commit message.
@@ -103,8 +106,9 @@ impl Commit {
             seq: commit.id.seq + 1,
         };
 
-        // Create a new commit with the same ID as the current one, but a different version.
-        let new_commit = commitstore::new(context, new_commit_id, new_ver, treehash, message)?;
+        let new_commit = create_commit(new_commit_id, new_ver, treehash, message);
+
+        commitstore::save(context, &new_commit)?;
 
         Commit::save_current(context, new_commit_id)?;
 
@@ -153,13 +157,9 @@ impl Commit {
         let new_ver = branch.ver + 1;
 
         // Create a new commit with the same ID as the current one, but a different version.
-        let commit = commitstore::new(
-            context,
-            current_commit.id,
-            new_ver,
-            treehash,
-            commit_message,
-        )?;
+        let commit = create_commit(current_commit.id, new_ver, treehash, commit_message);
+
+        commitstore::save(context, &commit)?;
 
         // No need to update current commit pointer since we're using the same ID
 
@@ -241,8 +241,7 @@ impl Commit {
         treehash: Digest,
         message: String,
     ) -> Result<Self, CommitError> {
-        let commit = commitstore::new(
-            context,
+        let commit = create_commit(
             CommitID {
                 branch: branch_id,
                 seq: CommitID::SEQ_ZERO,
@@ -250,12 +249,38 @@ impl Commit {
             0,
             treehash,
             message,
-        )?;
+        );
+
+        commitstore::save(context, &commit)?;
+
         Ok(commit)
     }
 
     /// Saves the current commit.
     pub(crate) fn save_current(context: &Context, id: CommitID) -> Result<(), CommitError> {
         commitstore::save_current(context, id)
+    }
+}
+
+/// Creates a new commit object with proper hash calculation.
+///
+/// This function constructs a Commit object with the given parameters and
+/// calculates a hash based on the commit's content. It does not save the commit to the store.
+fn create_commit(id: CommitID, ver: u64, treehash: Digest, message: String) -> Commit {
+    // Calculate hash based on commit contents
+    let mut hasher = Xxh3::new();
+
+    hasher.update(message.as_bytes());
+    // TODO: add other metadata that defines a commit state, but not a position
+
+    hasher.update(&treehash.to_be_bytes());
+
+    // Create commit with calculated hash
+    Commit {
+        id,
+        ver,
+        hash: hasher.digest128(),
+        treehash,
+        message,
     }
 }

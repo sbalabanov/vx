@@ -131,7 +131,7 @@ pub fn update_headseq(
     context: &Context,
     branch_id: u64,
     new_headseq: u64,
-    new_ver: u32,
+    new_ver: u64,
 ) -> Result<Branch, BranchError> {
     let db = open(context)?;
     let key = branch_id.to_be_bytes();

@@ -1,6 +1,5 @@
 use crate::context::Context;
 use crate::core::commit::{Commit, CommitID};
-use crate::core::digest::Digest;
 use crate::storage::COMMITS_FILE_NAME;
 use sled::Tree;
 use std::io;
@@ -43,22 +42,9 @@ fn open_tree(context: &Context, name: &str) -> Result<Tree, CommitError> {
     Ok(tree)
 }
 
-/// Creates a new commit.
-pub fn new(
-    context: &Context,
-    commit_id: CommitID,
-    ver: u32,
-    treehash: Digest,
-    message: String,
-) -> Result<Commit, CommitError> {
+/// Saves a new commit to the data store.
+pub fn save(context: &Context, commit: &Commit) -> Result<(), CommitError> {
     let commit_tree = open_tree(context, COMMITS_TREE)?;
-
-    let commit = Commit {
-        id: commit_id,
-        treehash,
-        message,
-        ver,
-    };
 
     // Use branch ID and sequence number as composite key
     let key = compose_key(commit.id);
@@ -133,11 +119,11 @@ pub fn new(
     }
 
     commit_tree.flush()?;
-    Ok(commit)
+    Ok(())
 }
 
 /// Gets commit info by commit ID, with version no greater than specified.
-pub fn get(context: &Context, commit_id: CommitID, ver: u32) -> Result<Commit, CommitError> {
+pub fn get(context: &Context, commit_id: CommitID, ver: u64) -> Result<Commit, CommitError> {
     let key = compose_key(commit_id);
     let commit_tree = open_tree(context, COMMITS_TREE)?;
 
@@ -190,7 +176,7 @@ fn compose_key(commit_id: CommitID) -> [u8; 16] {
 pub fn list(
     context: &Context,
     branch_id: u64,
-    branch_ver: u32,
+    branch_ver: u64,
     branch_headseq: u64,
 ) -> Result<Vec<Commit>, CommitError> {
     let commit_tree = open_tree(context, COMMITS_TREE)?;

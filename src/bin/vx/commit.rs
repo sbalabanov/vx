@@ -77,8 +77,13 @@ fn show(context: &Context, spec: Option<String>) -> Result<(), String> {
     match result {
         Ok(commit) => {
             println!(
-                "{}:{}\t{}\tv{}\t{}\n",
-                commit.id.branch, commit.id.seq, commit.treehash, commit.ver, commit.message,
+                "Branch: {}\nSequence: {}\nHash: {}\nTree Hash: {}\nVersion: {}\nMessage: {}\n",
+                commit.id.branch,
+                commit.id.seq,
+                commit.hash,
+                commit.treehash,
+                commit.ver,
+                commit.message,
             );
             Ok(())
         }
