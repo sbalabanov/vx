@@ -1,5 +1,5 @@
 use crate::context::Context;
-use crate::core::commit::{Commit, CommitID};
+use crate::core::commit::{Commit, CommitID, CurrentCommitSpec};
 use crate::storage::branch::{self as branchstore, BranchError};
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +58,15 @@ impl Branch {
                     BranchError::Other(format!("Failed to create centinel commit: {}", e))
                 })?;
 
-        Commit::save_current(context, branch_commit.id)
+        let current = CurrentCommitSpec {
+            commit_id: branch_commit.id,
+            ver: branch.ver,
+            rebuild_seq: CurrentCommitSpec::NO_REBUILD,
+            rebuild_ver: CurrentCommitSpec::NO_REBUILD,
+        };
+
+        current
+            .save(context)
             .map_err(|e| BranchError::Other(format!("Failed to set current branch: {}", e)))?;
 
         Ok(branch)
@@ -123,6 +131,14 @@ impl Branch {
     ) -> Result<Branch, BranchError> {
         branchstore::update_headseq(context, branch_id, new_headseq, new_ver)
     }
+
+    // pub(crate) fn set_rebuild_seq(
+    //     context: &Context,
+    //     branch_id: u64,
+    //     new_rebuildseq: u64,
+    // ) -> Result<Branch, BranchError> {
+    //     branchstore::update_rebuildseq(context, branch_id, new_rebuildseq)
+    // }
 }
 
 /// Validates if a branch name is valid.

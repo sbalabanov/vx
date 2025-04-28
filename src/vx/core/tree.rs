@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::blob::Blob;
-use crate::core::commit::{Commit, CommitID};
+use crate::core::commit::{Commit, CommitID, CurrentCommitSpec};
 use crate::core::digest::{Digest, DigestExt};
 use crate::global::{DATA_FOLDER, TEMP_FOLDER};
 use crate::storage::tree::{self as treestore, TreeError};
@@ -103,6 +103,21 @@ impl Tree {
         db.flush()?;
         Ok(tree)
     }
+
+    // Get tree changes between two commits.
+    // pub(crate) fn get_diff(
+    //     context: &Context,
+    //     commit1: Commit,
+    //     commit2: Commit,
+    // ) -> Result<Vec<Change>, TreeError> {
+    //     let db = treestore::open(context)?;
+    //     let tree1 = treestore::get(&db, commit1.treehash)?;
+    //     let tree2 = treestore::get(&db, commit2.treehash)?;
+
+    //     // TODO: implement the diff algorithm
+
+    //     Ok(Vec::new())
+    // }
 }
 
 #[derive(Debug, Clone)]
@@ -687,8 +702,16 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
     // Recursively materialize the tree
     materialize_tree(context, &db, &blob_db, root_tree.hash)?;
 
+    let current = CurrentCommitSpec {
+        commit_id,
+        ver: commit.ver,
+        rebuild_seq: CurrentCommitSpec::NO_REBUILD,
+        rebuild_ver: CurrentCommitSpec::NO_REBUILD,
+    };
+
     // Update the current commit
-    Commit::save_current(context, commit_id)
+    current
+        .save(context)
         .map_err(|e| TreeError::Other(format!("Failed to update current commit: {:?}", e)))?;
 
     Ok(())

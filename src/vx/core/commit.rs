@@ -15,6 +15,38 @@ pub struct CommitID {
     pub seq: u64,
 }
 
+/// Specification of the most recent commit on a current branch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CurrentCommitSpec {
+    /// The ID of the commit.
+    pub commit_id: CommitID,
+    /// The version of the commit at branch's head.
+    pub ver: u64,
+    /// The sequential number of the commit currently being rebuilt if the branch is in the rebuild mode, otherwise zero.
+    pub rebuild_seq: u64,
+    /// The version of the commit currently being rebuilt if the branch is in the rebuild mode, otherwise zero.
+    pub rebuild_ver: u64,
+}
+
+impl CurrentCommitSpec {
+    pub const NO_REBUILD: u64 = 0;
+
+    /// Returns true if the branch is in the rebuild mode.
+    pub fn is_rebuild(&self) -> bool {
+        self.rebuild_ver > 0
+    }
+
+    /// Retrieves the current commit specification.
+    pub fn get(context: &Context) -> Result<Self, CommitError> {
+        commitstore::get_current(context)
+    }
+
+    /// Saves the current commit specification.
+    pub fn save(&self, context: &Context) -> Result<(), CommitError> {
+        commitstore::save_current(context, *self)
+    }
+}
+
 impl CommitID {
     pub(crate) const SEQ_ZERO: u64 = 0;
 
@@ -46,7 +78,7 @@ impl CommitID {
                         // No separator and spec is an integer - use as sequence on current branch
                         let current_commit_id = commitstore::get_current(context)?;
                         Ok(CommitID {
-                            branch: current_commit_id.branch,
+                            branch: current_commit_id.commit_id.branch,
                             seq,
                         })
                     }
@@ -110,9 +142,20 @@ impl Commit {
 
         commitstore::save(context, &new_commit)?;
 
-        Commit::save_current(context, new_commit_id)?;
+        if new_commit_id.seq <= branch.headseq {
+            // New commit is in the middle of the branch, so we need to rebuild the branch
+            // TODO: implement branch rebuilding
+        }
 
-        // TODO: rebuild branch if commit is in the middle
+        // Finally save the current commit specification to advance the branch head
+        let current = CurrentCommitSpec {
+            commit_id: new_commit_id,
+            ver: new_ver,
+            rebuild_seq: CurrentCommitSpec::NO_REBUILD,
+            rebuild_ver: CurrentCommitSpec::NO_REBUILD,
+        };
+
+        current.save(context)?;
 
         // TODO: potential race condition between new commit and branch update
         // Current commit may be recorded before the branch really updates, so in case of a failure
@@ -128,7 +171,9 @@ impl Commit {
     /// If no message is provided, the existing message is preserved.
     pub fn amend(context: &Context, message: Option<String>) -> Result<Self, CommitError> {
         // Get the current commit
-        let current_commit = Commit::get_current(context)?;
+        let mut current = CurrentCommitSpec::get(context)?;
+
+        let current_commit = commitstore::get(context, current.commit_id, current.ver)?;
 
         // Check if this is a centinel commit (seq is zero)
         if current_commit.id.seq == CommitID::SEQ_ZERO {
@@ -141,8 +186,10 @@ impl Commit {
         let treehash = Tree::create(context)
             .map_err(|e| CommitError::Other(format!("Tree error: {:?}", e)))?;
 
+        let files_changed = current_commit.treehash != treehash;
+
         // If no changes to the tree and the message remains the same, return NoChanges error
-        if current_commit.treehash == treehash
+        if !files_changed
             && (message.is_none() || message.as_ref() == Some(&current_commit.message))
         {
             return Err(CommitError::NoChanges);
@@ -154,17 +201,69 @@ impl Commit {
         let branch = Branch::get(context, current_commit.id.branch)
             .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
 
-        let new_ver = branch.ver + 1;
+        let mut new_ver = branch.ver + 1;
 
         // Create a new commit with the same ID as the current one, but a different version.
         let commit = create_commit(current_commit.id, new_ver, treehash, commit_message);
 
         commitstore::save(context, &commit)?;
 
-        // No need to update current commit pointer since we're using the same ID
+        if commit.id.seq < branch.headseq {
+            // Amended commit is in the middle of the branch, so we need to rebuild the branch
+            // TODO: implement branch rebuilding
+            if !files_changed {
+                // If files did not change, branch rebuild is trivial as we only have to update upward commits versions
+                // Do not even set the rebuild flag as no checkout will be needed
+                for seq in commit.id.seq..=branch.headseq {
+                    let mut commit = commitstore::get(
+                        context,
+                        CommitID {
+                            branch: commit.id.branch,
+                            seq,
+                        },
+                        branch.ver,
+                    )?;
+                    new_ver += 1;
+                    commit.ver = new_ver;
+                    commitstore::save(context, &commit)?;
+                }
+            } else {
+                // If files changed, we need to rebuild the branch by reapplying all commit's diffs upwards
 
-        // TODO: rebuild branch if commit is in the middle
+                // First, set the branch in the rebuild mode
+                // TODO: delay this until the checkout is needed to resolve conflicts.
+                current.rebuild_seq = commit.id.seq;
+                current.rebuild_ver = new_ver;
+                current.save(context)?;
 
+                // Rebuild the branch by diffing and reapplying older versions of commits on top of the new tree
+                for seq in commit.id.seq..=branch.headseq {
+                    let mut commit = commitstore::get(
+                        context,
+                        CommitID {
+                            branch: commit.id.branch,
+                            seq,
+                        },
+                        branch.ver,
+                    )?;
+
+                    // TODO: reapply the diffs and resolve conflicts
+                    // This workflow is potentially interruptive and may need user input and file tree
+                    // modifications.
+
+                    new_ver += 1;
+                    commit.ver = new_ver;
+                    commitstore::save(context, &commit)?;
+                }
+
+                // Set the branch out of the rebuild mode
+                current.rebuild_seq = CurrentCommitSpec::NO_REBUILD;
+                current.rebuild_ver = CurrentCommitSpec::NO_REBUILD;
+                current.save(context)?;
+            }
+        }
+
+        // Update the branch to the new version. This concludes the workflow.
         Branch::advance_head(context, commit.id.branch, commit.id.seq, new_ver)
             .map_err(|e| CommitError::Other(format!("Failed to advance branch head: {}", e)))?;
 
@@ -176,7 +275,7 @@ impl Commit {
     /// branches.
     pub fn list(context: &Context) -> Result<Vec<Self>, CommitError> {
         let commit_id = commitstore::get_current(context)?;
-        let branch = Branch::get(context, commit_id.branch)
+        let branch = Branch::get(context, commit_id.commit_id.branch)
             .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
         commitstore::list(context, branch.id, branch.ver, branch.headseq)
     }
@@ -208,19 +307,18 @@ impl Commit {
 
     /// Retrieves a specific commit by id.
     pub fn get_from_current_branch(context: &Context, seq: u64) -> Result<Self, CommitError> {
-        let mut commit_id = commitstore::get_current(context)?;
-        commit_id.seq = seq;
+        let current = CurrentCommitSpec::get(context)?;
+        let commit_id = CommitID {
+            branch: current.commit_id.branch,
+            seq,
+        };
         Self::get(context, commit_id)
     }
 
     /// Retrieves the current commit.
     pub fn get_current(context: &Context) -> Result<Self, CommitError> {
-        let commit_id = commitstore::get_current(context)?;
-        let branch = Branch::get(context, commit_id.branch)
-            .map_err(|e| CommitError::Other(format!("Branch error: {:?}", e)))?;
-        // TODO: process branch_id:0 current commits (i.e. new branch without commits).
-        // Either add a centinel commit or resolve to the branch's headseq.
-        commitstore::get(context, commit_id, branch.ver)
+        let current = CurrentCommitSpec::get(context)?;
+        commitstore::get(context, current.commit_id, current.ver)
     }
 
     /// Retrieves a commit by its specification string.
@@ -254,11 +352,6 @@ impl Commit {
         commitstore::save(context, &commit)?;
 
         Ok(commit)
-    }
-
-    /// Saves the current commit.
-    pub(crate) fn save_current(context: &Context, id: CommitID) -> Result<(), CommitError> {
-        commitstore::save_current(context, id)
     }
 }
 

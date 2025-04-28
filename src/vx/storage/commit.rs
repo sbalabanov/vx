@@ -1,5 +1,5 @@
 use crate::context::Context;
-use crate::core::commit::{Commit, CommitID};
+use crate::core::commit::{Commit, CommitID, CurrentCommitSpec};
 use crate::storage::COMMITS_FILE_NAME;
 use sled::Tree;
 use std::io;
@@ -142,23 +142,23 @@ pub fn get(context: &Context, commit_id: CommitID, ver: u64) -> Result<Commit, C
     }
 }
 
-/// Gets the current commit's branch ID and sequence number.
-pub fn get_current(context: &Context) -> Result<CommitID, CommitError> {
+/// Gets the current commit's branch ID, sequence number, and other metadata.
+pub fn get_current(context: &Context) -> Result<CurrentCommitSpec, CommitError> {
     let seq_tree = open_tree(context, METADATA)?;
 
     match seq_tree.get(CURRENT_COMMIT_KEY)? {
         Some(ivec) => {
-            let (branch, seq): (u64, u64) = bincode::deserialize(&ivec)?;
-            Ok(CommitID { branch, seq })
+            let current: CurrentCommitSpec = bincode::deserialize(&ivec)?;
+            Ok(current)
         }
-        None => Ok(CommitID { branch: 0, seq: 0 }), // Return (0,0) if no commits exist
+        None => Err(CommitError::NotFound), // Return NotFound error if no current commit exists
     }
 }
 
-/// Saves the current commit's branch ID and sequence number.
-pub fn save_current(context: &Context, commit_id: CommitID) -> Result<(), CommitError> {
+/// Saves the current commit's branch ID and sequence number and other metadata.
+pub fn save_current(context: &Context, current: CurrentCommitSpec) -> Result<(), CommitError> {
     let seq_tree = open_tree(context, METADATA)?;
-    let value = bincode::serialize(&(commit_id.branch, commit_id.seq))?;
+    let value = bincode::serialize(&current)?;
     seq_tree.insert(CURRENT_COMMIT_KEY, value)?;
     seq_tree.flush()?;
     Ok(())

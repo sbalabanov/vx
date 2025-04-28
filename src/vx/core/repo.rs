@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::core::branch::Branch;
-use crate::core::commit::Commit;
+use crate::core::commit::{Commit, CurrentCommitSpec};
 use crate::core::tree::Tree;
 use crate::storage::repo::{self as repostore, RepoError};
 use serde::{Deserialize, Serialize};
@@ -52,8 +52,16 @@ impl Repo {
         )
         .map_err(|e| RepoError::Other(format!("Failed to create initial commit: {}", e)))?;
 
+        let current = CurrentCommitSpec {
+            commit_id: commit.id,
+            ver: branch.ver,
+            rebuild_seq: CurrentCommitSpec::NO_REBUILD,
+            rebuild_ver: CurrentCommitSpec::NO_REBUILD,
+        };
+
         // Set this as the current branch
-        Commit::save_current(&context, commit.id)
+        current
+            .save(&context)
             .map_err(|e| RepoError::Other(format!("Failed to set current branch: {}", e)))?;
 
         Ok((repo, context))
