@@ -11,6 +11,21 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 
+// Scenarios
+// 1. Read changes between commit tree and filesystem tree (status command)
+//   - Bottom up traversal of both trees
+//   - Computing Merkle tree for the filesystem tree
+// 2. Read changes between two commits (branch rebuild)
+//   - Top down traversal of both commit trees
+// 3. Write changes from commit tree to filesystem tree (checkout command)
+//   - Top down traversal of both trees
+//   - Computing file hashes
+//   - Writing files to a file system
+// 4. Write filesystem tree to a new commit tree (commit command)
+//   - Bottom up traversal of the filesystem tree
+//   - Computing Merkle tree for the filesystem tree
+//   - Saving files to a blob storage
+
 /// Represents a folder content in a file tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
@@ -60,7 +75,7 @@ fn default_tree() -> Tree {
 }
 
 impl Tree {
-    /// Get the changes between current tree and the latest commit.
+    /// Get the changes between latest commit tree and the current filesystem tree.
     pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, TreeError> {
         // sergeyb: tried to use walkdir, but it's not working as expected
         // too high level, object creation overhead and can't properly traverse bottom up with filtering
@@ -70,7 +85,7 @@ impl Tree {
             .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
 
         let db = treestore::open(context)?;
-        traverse_tree(context, &db, commit.treehash)
+        get_changes_between_commit_tree_and_filesystem_tree(context, &db, commit.treehash)
     }
 
     /// Creates a new tree from the current directory recursively.
@@ -78,8 +93,7 @@ impl Tree {
         let db = treestore::open(context)?;
         let blob_db = Blob::open(context)
             .map_err(|e| TreeError::Other(format!("Blob store error: {:?}", e)))?;
-        //let stats = persist_tree(context, &db, Path::new(""))?;
-        let stats = persist_tree_parallel(context, &db, &blob_db, Path::new(""))?;
+        let stats = write_filesystem_tree_to_commit_tree(context, &db, &blob_db, Path::new(""))?;
         Ok(stats.hash)
     }
 
@@ -104,20 +118,19 @@ impl Tree {
         Ok(tree)
     }
 
-    // Get tree changes between two commits.
-    // pub(crate) fn get_diff(
-    //     context: &Context,
-    //     commit1: Commit,
-    //     commit2: Commit,
-    // ) -> Result<Vec<Change>, TreeError> {
-    //     let db = treestore::open(context)?;
-    //     let tree1 = treestore::get(&db, commit1.treehash)?;
-    //     let tree2 = treestore::get(&db, commit2.treehash)?;
+    /// Get file and folder changes between two commits' trees.
+    pub(crate) fn get_diff(
+        context: &Context,
+        commit1_treehash: Digest,
+        commit2_treehash: Digest,
+    ) -> Result<Vec<Change>, TreeError> {
+        let db = treestore::open(context)?;
 
-    //     // TODO: implement the diff algorithm
+        let changes =
+            get_changes_between_commit_trees(context, &db, commit1_treehash, commit2_treehash)?;
 
-    //     Ok(Vec::new())
-    // }
+        Ok(changes)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +202,11 @@ fn new_tree(
 // Walk the file tree and vx tree in parallel, identifying differences.
 // There are reasons we are not using recursive algorithm: it would be harder to debug a long stack and
 // harder to parallelize.
-fn traverse_tree(context: &Context, db: &Db, treehash: Digest) -> Result<Vec<Change>, TreeError> {
+fn get_changes_between_commit_tree_and_filesystem_tree(
+    context: &Context,
+    db: &Db,
+    treehash: Digest,
+) -> Result<Vec<Change>, TreeError> {
     // TODO: use mtime/size index and parallelize
 
     let mut changed_paths = Vec::new();
@@ -515,83 +532,9 @@ struct TreeStats {
     folder_count: u64,
 }
 
-// (UNOPTIMIZED) Creates a tree from a directory, saving entities to storage on the go
-#[allow(dead_code)]
-fn persist_tree(
-    context: &Context,
-    db: &Db,
-    blob_db: &Db,
-    path: &Path,
-) -> Result<TreeStats, TreeError> {
-    // Unlike in get changes, here we go with the recursive algorithm. It will likely be
-    // rewritten anyways so going with it for the sake of time.
-
-    // Get the absolute path to work with
-    let abs_path = context.checkout_path.join(path);
-
-    // If it's a directory, process its contents
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-
-    let mut vx_folders = Vec::new();
-    let mut vx_files = Vec::new();
-
-    // Read directory entries
-    let mut entries = std::fs::read_dir(&abs_path)?;
-
-    // parse entries
-    parse_entries(&mut entries, &mut dirs, &mut files)?;
-
-    // Initialize folder statistics
-    let mut total_size: u64 = 0;
-    let mut total_file_count: u64 = files.len() as u64;
-    let mut total_folder_count: u64 = dirs.len() as u64;
-
-    for dir in dirs.into_iter() {
-        // Recursively process subdirectory and get its stats
-        let folder_stats = persist_tree(context, db, blob_db, &path.join(&dir))?;
-
-        // Update totals with subdirectory stats
-        total_size += folder_stats.size;
-        total_file_count += folder_stats.file_count;
-        total_folder_count += folder_stats.folder_count;
-
-        // Add folder to vx_folders with just the name and hash
-        vx_folders.push(Folder {
-            name: dir,
-            hash: folder_stats.hash,
-        });
-    }
-
-    for file in files.into_iter() {
-        let file_path = abs_path.join(&file);
-        let vx_file = new_file(context, blob_db, file.clone(), &file_path)?;
-
-        total_size += vx_file.blob.size;
-
-        vx_files.push(vx_file);
-    }
-
-    let tree = new_tree(
-        db,
-        vx_folders,
-        vx_files,
-        total_size,
-        total_file_count,
-        total_folder_count,
-    )?;
-
-    Ok(TreeStats {
-        hash: tree.hash,
-        size: total_size,
-        file_count: total_file_count,
-        folder_count: total_folder_count,
-    })
-}
-
 // Creates a tree from a directory, saving entities to storage on the go, using a configured
 // level of concurrency.
-fn persist_tree_parallel(
+fn write_filesystem_tree_to_commit_tree(
     context: &Context,
     db: &Db,
     blob_db: &Db,
@@ -616,25 +559,26 @@ fn persist_tree_parallel(
     const PARALLEL_THRESHOLD: usize = 4;
 
     // Process directories in parallel if there are enough of them
-    let folder_results: Vec<Result<(String, TreeStats), TreeError>> =
-        if dirs.len() >= PARALLEL_THRESHOLD {
-            dirs.par_iter()
-                .map(|dir| {
-                    let dir_path = path.join(dir);
-                    let stats = persist_tree_parallel(context, db, blob_db, &dir_path)?;
-                    Ok((dir.clone(), stats))
-                })
-                .collect()
-        } else {
-            // Process sequentially for small number of directories
-            dirs.iter()
-                .map(|dir| {
-                    let dir_path = path.join(dir);
-                    let stats = persist_tree_parallel(context, db, blob_db, &dir_path)?;
-                    Ok((dir.clone(), stats))
-                })
-                .collect()
-        };
+    let folder_results: Vec<Result<(String, TreeStats), TreeError>> = if dirs.len()
+        >= PARALLEL_THRESHOLD
+    {
+        dirs.par_iter()
+            .map(|dir| {
+                let dir_path = path.join(dir);
+                let stats = write_filesystem_tree_to_commit_tree(context, db, blob_db, &dir_path)?;
+                Ok((dir.clone(), stats))
+            })
+            .collect()
+    } else {
+        // Process sequentially for small number of directories
+        dirs.iter()
+            .map(|dir| {
+                let dir_path = path.join(dir);
+                let stats = write_filesystem_tree_to_commit_tree(context, db, blob_db, &dir_path)?;
+                Ok((dir.clone(), stats))
+            })
+            .collect()
+    };
 
     // Process files sequentially (usually IO bound and less costly than directory traversal)
     let mut vx_files: Vec<File> = Vec::with_capacity(files.len());
@@ -700,7 +644,7 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
     let root_tree = treestore::get(&db, commit.treehash)?;
 
     // Recursively materialize the tree
-    materialize_tree(context, &db, &blob_db, root_tree.hash)?;
+    write_commit_tree_to_filesystem_tree(context, &db, &blob_db, root_tree.hash)?;
 
     let current = CurrentCommitSpec {
         commit_id,
@@ -718,7 +662,7 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
 }
 
 /// Recursively materializes a tree, overwriting files if needed.
-fn materialize_tree(
+fn write_commit_tree_to_filesystem_tree(
     context: &Context,
     db: &Db,
     blob_db: &Db,
@@ -959,6 +903,163 @@ fn materialize_folder_without_checks(
         let file_path = abs_path.join(&file.name);
         Blob::to_file(context, blob_db, file.blob.contenthash, &file_path)
             .map_err(|e| TreeError::Other(format!("Failed to write file: {:?}", e)))?;
+    }
+
+    Ok(())
+}
+
+/// Gets changes between two commit trees.
+/// This function compares two trees recursively and returns a list of changes between them.
+fn get_changes_between_commit_trees(
+    context: &Context,
+    db: &Db,
+    tree1_hash: Digest,
+    tree2_hash: Digest,
+) -> Result<Vec<Change>, TreeError> {
+    // If trees are identical, return empty changes
+    if tree1_hash == tree2_hash {
+        return Ok(Vec::new());
+    }
+
+    let mut changes = Vec::new();
+
+    // Start the recursive comparison from the root path
+    compare_trees_recursively(db, &mut changes, &PathBuf::new(), tree1_hash, tree2_hash)?;
+
+    Ok(changes)
+}
+
+/// Recursively compares two trees and collects the changes between them.
+fn compare_trees_recursively(
+    db: &Db,
+    changes: &mut Vec<Change>,
+    path: &Path,
+    hash1: Digest,
+    hash2: Digest,
+) -> Result<(), TreeError> {
+    if hash1 == hash2 {
+        return Ok(());
+    }
+
+    // Get both trees
+    let tree1 = treestore::get(db, hash1)?;
+    let tree2 = treestore::get(db, hash2)?;
+
+    let mut iter1 = tree1.folders.iter().peekable();
+    let mut iter2 = tree2.folders.iter().peekable();
+
+    // Compare folders that exist in both trees
+    while let (Some(folder1), Some(folder2)) = (iter1.peek(), iter2.peek()) {
+        match folder1.name.cmp(&folder2.name) {
+            Ordering::Equal => {
+                if folder1.hash != folder2.hash {
+                    compare_trees_recursively(db, changes, path, folder1.hash, folder2.hash)?;
+                }
+                iter1.next();
+                iter2.next();
+            }
+            Ordering::Less => {
+                // Folder1 is deleted, add it as deleted
+                changes.push(Change {
+                    action: ChangeAction::Deleted,
+                    path: path.join(&folder1.name),
+                    change_type: ChangeType::Folder,
+                    contenthash: folder1.hash,
+                });
+                iter1.next();
+            }
+            Ordering::Greater => {
+                // Folder2 is added, add it as added
+                changes.push(Change {
+                    action: ChangeAction::Added,
+                    path: path.join(&folder2.name),
+                    change_type: ChangeType::Folder,
+                    contenthash: folder2.hash,
+                });
+                iter2.next();
+            }
+        }
+    }
+
+    // Handle remaining folders in tree1 (all deleted)
+    while let Some(folder1) = iter1.next() {
+        changes.push(Change {
+            action: ChangeAction::Deleted,
+            path: path.join(&folder1.name),
+            change_type: ChangeType::Folder,
+            contenthash: folder1.hash,
+        });
+    }
+
+    // Handle remaining folders in tree2 (all added)
+    while let Some(folder2) = iter2.next() {
+        changes.push(Change {
+            action: ChangeAction::Added,
+            path: path.join(&folder2.name),
+            change_type: ChangeType::Folder,
+            contenthash: folder2.hash,
+        });
+    }
+
+    // Compare files in the current folder
+    let mut iter1 = tree1.files.iter().peekable();
+    let mut iter2 = tree2.files.iter().peekable();
+
+    while let (Some(file1), Some(file2)) = (iter1.peek(), iter2.peek()) {
+        match file1.name.cmp(&file2.name) {
+            Ordering::Equal => {
+                if file1.blob.contenthash != file2.blob.contenthash {
+                    changes.push(Change {
+                        action: ChangeAction::Modified,
+                        path: path.join(&file1.name),
+                        change_type: ChangeType::File,
+                        contenthash: file2.blob.contenthash,
+                    });
+                }
+                iter1.next();
+                iter2.next();
+            }
+            Ordering::Less => {
+                // File1 is deleted, add it as deleted
+                changes.push(Change {
+                    action: ChangeAction::Deleted,
+                    path: path.join(&file1.name),
+                    change_type: ChangeType::File,
+                    contenthash: file1.blob.contenthash,
+                });
+                iter1.next();
+            }
+            Ordering::Greater => {
+                // File2 is added, add it as added
+                changes.push(Change {
+                    action: ChangeAction::Added,
+                    path: path.join(&file2.name),
+                    change_type: ChangeType::File,
+                    contenthash: file2.blob.contenthash,
+                });
+                iter2.next();
+            }
+        }
+    }
+
+    // Handle remaining files in tree1 (all deleted)
+    while let Some(file1) = iter1.next() {
+        changes.push(Change {
+            action: ChangeAction::Deleted,
+            path: path.join(&file1.name),
+            change_type: ChangeType::File,
+            contenthash: file1.blob.contenthash,
+        });
+    }
+
+    // Handle remaining files in tree2 (all added)
+    while let Some(file2) = iter2.next() {
+        changes.push(Change {
+            action: ChangeAction::Added,
+            path: path.join(&file2.name),
+            change_type: ChangeType::File,
+            contenthash: file2.blob.contenthash,
+        });
     }
 
     Ok(())
