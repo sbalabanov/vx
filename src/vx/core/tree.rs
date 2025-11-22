@@ -12,16 +12,16 @@ use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 
 // Scenarios
-// 1. Read changes between commit tree and filesystem tree (status command)
+// 1. Read changes between vx tree and filesystem tree (status command)
 //   - Bottom up traversal of both trees
 //   - Computing Merkle tree for the filesystem tree
-// 2. Read changes between two commits (branch rebuild)
-//   - Top down traversal of both commit trees
-// 3. Write changes from commit tree to filesystem tree (checkout command)
+// 2. Read changes between two vx trees (branch rebuild)
+//   - Top down traversal of both vx trees
+// 3. Write changes from vx tree to filesystem tree (checkout command)
 //   - Top down traversal of both trees
 //   - Computing file hashes
 //   - Writing files to a file system
-// 4. Write filesystem tree to a new commit tree (commit command)
+// 4. Write filesystem tree to a new vx tree (commit command)
 //   - Bottom up traversal of the filesystem tree
 //   - Computing Merkle tree for the filesystem tree
 //   - Saving files to a blob storage
@@ -75,25 +75,25 @@ fn default_tree() -> Tree {
 }
 
 impl Tree {
-    /// Get the changes between latest commit tree and the current filesystem tree.
+    /// Get the changes between latest vx tree and the current filesystem tree.
     pub fn get_changed_files(context: &Context) -> Result<Vec<Change>, TreeError> {
         // sergeyb: tried to use walkdir, but it's not working as expected
         // too high level, object creation overhead and can't properly traverse bottom up with filtering
 
-        // get the commit to compare against, so far current commit
+        // get the vx tree to compare against, so far current commit
         let commit = Commit::get_current(context)
             .map_err(|e| TreeError::Other(format!("Commit error: {:?}", e)))?;
 
         let db = treestore::open(context)?;
-        get_changes_between_commit_tree_and_filesystem_tree(context, &db, commit.treehash)
+        get_changes_between_vx_tree_and_filesystem_tree(context, &db, commit.treehash)
     }
 
-    /// Creates a new tree from the current directory recursively.
+    /// Creates a new vx tree from the current directory recursively.
     pub fn create(context: &Context) -> Result<Digest, TreeError> {
         let db = treestore::open(context)?;
         let blob_db = Blob::open(context)
             .map_err(|e| TreeError::Other(format!("Blob store error: {:?}", e)))?;
-        let stats = write_filesystem_tree_to_commit_tree(context, &db, &blob_db, Path::new(""))?;
+        let stats = write_filesystem_tree_to_vx_tree(context, &db, &blob_db, Path::new(""))?;
         Ok(stats.hash)
     }
 
@@ -109,7 +109,7 @@ impl Tree {
         Ok(())
     }
 
-    /// Creates a new empty tree and saves it to the database.
+    /// Creates a new empty vx tree and saves it to the database.
     pub(crate) fn create_empty(context: &Context) -> Result<Self, TreeError> {
         let db = treestore::open(context)?;
         let tree = new_tree(&db, Vec::new(), Vec::new(), 0, 0, 0)?;
@@ -118,16 +118,15 @@ impl Tree {
         Ok(tree)
     }
 
-    /// Get file and folder changes between two commits' trees.
+    /// Get file and folder changes between two vx trees.
     pub(crate) fn get_diff(
         context: &Context,
-        commit1_treehash: Digest,
-        commit2_treehash: Digest,
+        tree1_hash: Digest,
+        tree2_hash: Digest,
     ) -> Result<Vec<Change>, TreeError> {
         let db = treestore::open(context)?;
 
-        let changes =
-            get_changes_between_commit_trees(context, &db, commit1_treehash, commit2_treehash)?;
+        let changes = get_changes_between_vx_trees(context, &db, tree1_hash, tree2_hash)?;
 
         Ok(changes)
     }
@@ -146,12 +145,19 @@ pub enum ChangeType {
     Folder,
 }
 
+/// Represents a change for a single file or folder in a tree.
 #[derive(Debug, Clone)]
 pub struct Change {
+    /// Action performed on the file or folder.
     pub action: ChangeAction,
+    /// Path to the file or folder.
     pub path: PathBuf,
+    /// Type of the change (file or folder).
     pub change_type: ChangeType,
-    pub contenthash: Digest,
+    /// Hash of the original file or folder's content ("left"), NONE if the file or folder is added
+    pub contenthash_left: Digest,
+    /// Hash of the destination file or folder's content ("right"), NONE if the file or folder is deleted
+    pub contenthash_right: Digest,
 }
 
 fn new_file(context: &Context, db_blob: &Db, name: String, path: &Path) -> Result<File, TreeError> {
@@ -161,7 +167,7 @@ fn new_file(context: &Context, db_blob: &Db, name: String, path: &Path) -> Resul
     Ok(file)
 }
 
-/// Creates a new tree with the specified contents, hashes it and saves to the database.
+/// Creates a new vx tree with the specified contents, hashes it and saves to the database.
 fn new_tree(
     db: &Db,
     folders: Vec<Folder>,
@@ -202,7 +208,7 @@ fn new_tree(
 // Walk the file tree and vx tree in parallel, identifying differences.
 // There are reasons we are not using recursive algorithm: it would be harder to debug a long stack and
 // harder to parallelize.
-fn get_changes_between_commit_tree_and_filesystem_tree(
+fn get_changes_between_vx_tree_and_filesystem_tree(
     context: &Context,
     db: &Db,
     treehash: Digest,
@@ -252,7 +258,8 @@ fn get_changes_between_commit_tree_and_filesystem_tree(
                         action: ChangeAction::Deleted,
                         path: state.current_dir.join(&folder.name),
                         change_type: ChangeType::Folder,
-                        contenthash: folder.hash,
+                        contenthash_left: folder.hash,
+                        contenthash_right: Digest::NONE,
                     });
                     state.vx_pos += 1;
                 }
@@ -271,7 +278,9 @@ fn get_changes_between_commit_tree_and_filesystem_tree(
                         action: ChangeAction::Added,
                         path: state.current_dir.join(&state.dirs[state.fs_pos]),
                         change_type: ChangeType::Folder,
-                        contenthash: Digest::NONE,
+                        contenthash_left: Digest::NONE,
+                        // TODO: compute hash of the folder?
+                        contenthash_right: Digest::NONE,
                     });
                     state.fs_pos += 1;
                 }
@@ -306,7 +315,9 @@ fn get_changes_between_commit_tree_and_filesystem_tree(
                         action: ChangeAction::Added,
                         path: state.current_dir.join(fs_name),
                         change_type: ChangeType::Folder,
-                        contenthash: Digest::NONE,
+                        contenthash_left: Digest::NONE,
+                        // TODO: compute hash of the folder or do not use the structure with contenthash_right
+                        contenthash_right: Digest::NONE,
                     });
                     state.fs_pos += 1;
                     continue 'horizontal;
@@ -317,7 +328,8 @@ fn get_changes_between_commit_tree_and_filesystem_tree(
                         action: ChangeAction::Deleted,
                         path: state.current_dir.join(&vx_dir.name),
                         change_type: ChangeType::Folder,
-                        contenthash: vx_dir.hash,
+                        contenthash_left: vx_dir.hash,
+                        contenthash_right: Digest::NONE,
                     });
                     state.vx_pos += 1;
                     continue 'horizontal;
@@ -439,7 +451,8 @@ fn process_files(
                     action: ChangeAction::Deleted,
                     path: state.current_dir.join(&vx_files[vx_pos].name),
                     change_type: ChangeType::File,
-                    contenthash: vx_files[vx_pos].blob.contenthash,
+                    contenthash_left: vx_files[vx_pos].blob.contenthash,
+                    contenthash_right: Digest::NONE,
                 });
                 vx_pos += 1;
             }
@@ -458,7 +471,8 @@ fn process_files(
                     action: ChangeAction::Added,
                     path: fs_file_path,
                     change_type: ChangeType::File,
-                    contenthash: fs_hash,
+                    contenthash_left: Digest::NONE,
+                    contenthash_right: fs_hash,
                 });
                 fs_pos += 1;
             }
@@ -487,7 +501,8 @@ fn process_files(
                         action: ChangeAction::Modified,
                         path: fs_file_path,
                         change_type: ChangeType::File,
-                        contenthash: fs_hash,
+                        contenthash_left: vx_hash,
+                        contenthash_right: fs_hash,
                     });
                 }
 
@@ -496,11 +511,15 @@ fn process_files(
             }
             Ordering::Less => {
                 // fs < vx: added, advance fs
+                let fs_file_path = state.current_dir.join(fs_name);
+                let (fs_hash, _) =
+                    Digest::compute_hash(&context.checkout_path.join(&fs_file_path))?;
                 changed_paths.push(Change {
                     action: ChangeAction::Added,
-                    path: state.current_dir.join(fs_name),
+                    path: fs_file_path,
                     change_type: ChangeType::File,
-                    contenthash: Digest::NONE,
+                    contenthash_left: Digest::NONE,
+                    contenthash_right: fs_hash,
                 });
                 fs_pos += 1;
             }
@@ -510,7 +529,8 @@ fn process_files(
                     action: ChangeAction::Deleted,
                     path: state.current_dir.join(vx_name),
                     change_type: ChangeType::File,
-                    contenthash: vx_files[vx_pos].blob.contenthash,
+                    contenthash_left: vx_files[vx_pos].blob.contenthash,
+                    contenthash_right: Digest::NONE,
                 });
                 vx_pos += 1;
             }
@@ -532,9 +552,9 @@ struct TreeStats {
     folder_count: u64,
 }
 
-// Creates a tree from a directory, saving entities to storage on the go, using a configured
+// Creates a vx tree from a directory, saving entities to storage on the go, using a configured
 // level of concurrency.
-fn write_filesystem_tree_to_commit_tree(
+fn write_filesystem_tree_to_vx_tree(
     context: &Context,
     db: &Db,
     blob_db: &Db,
@@ -559,26 +579,25 @@ fn write_filesystem_tree_to_commit_tree(
     const PARALLEL_THRESHOLD: usize = 4;
 
     // Process directories in parallel if there are enough of them
-    let folder_results: Vec<Result<(String, TreeStats), TreeError>> = if dirs.len()
-        >= PARALLEL_THRESHOLD
-    {
-        dirs.par_iter()
-            .map(|dir| {
-                let dir_path = path.join(dir);
-                let stats = write_filesystem_tree_to_commit_tree(context, db, blob_db, &dir_path)?;
-                Ok((dir.clone(), stats))
-            })
-            .collect()
-    } else {
-        // Process sequentially for small number of directories
-        dirs.iter()
-            .map(|dir| {
-                let dir_path = path.join(dir);
-                let stats = write_filesystem_tree_to_commit_tree(context, db, blob_db, &dir_path)?;
-                Ok((dir.clone(), stats))
-            })
-            .collect()
-    };
+    let folder_results: Vec<Result<(String, TreeStats), TreeError>> =
+        if dirs.len() >= PARALLEL_THRESHOLD {
+            dirs.par_iter()
+                .map(|dir| {
+                    let dir_path = path.join(dir);
+                    let stats = write_filesystem_tree_to_vx_tree(context, db, blob_db, &dir_path)?;
+                    Ok((dir.clone(), stats))
+                })
+                .collect()
+        } else {
+            // Process sequentially for small number of directories
+            dirs.iter()
+                .map(|dir| {
+                    let dir_path = path.join(dir);
+                    let stats = write_filesystem_tree_to_vx_tree(context, db, blob_db, &dir_path)?;
+                    Ok((dir.clone(), stats))
+                })
+                .collect()
+        };
 
     // Process files sequentially (usually IO bound and less costly than directory traversal)
     let mut vx_files: Vec<File> = Vec::with_capacity(files.len());
@@ -630,7 +649,7 @@ fn write_filesystem_tree_to_commit_tree(
 }
 
 /// Performs the checkout operation for a specific commit.
-/// This function materializes files on the filesystem according to what's stored in the commit tree.
+/// This function materializes files on the filesystem according to what's stored in the vx tree.
 fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeError> {
     // Get the commit
     let commit = Commit::get(context, commit_id)
@@ -640,11 +659,11 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
     let db = treestore::open(context)?;
     let blob_db = Blob::open(context)
         .map_err(|e| TreeError::Other(format!("Failed to open blob store: {:?}", e)))?;
-    // Get the root tree from the commit
+    // Get the root vx tree from the commit
     let root_tree = treestore::get(&db, commit.treehash)?;
 
-    // Recursively materialize the tree
-    write_commit_tree_to_filesystem_tree(context, &db, &blob_db, root_tree.hash)?;
+    // Recursively materialize the vx tree
+    write_vx_tree_to_filesystem_tree(context, &db, &blob_db, root_tree.hash)?;
 
     let current = CurrentCommitSpec {
         commit_id,
@@ -661,8 +680,8 @@ fn perform_checkout(context: &Context, commit_id: CommitID) -> Result<(), TreeEr
     Ok(())
 }
 
-/// Recursively materializes a tree, overwriting files if needed.
-fn write_commit_tree_to_filesystem_tree(
+/// Recursively materializes a vx tree, overwriting files if needed.
+fn write_vx_tree_to_filesystem_tree(
     context: &Context,
     db: &Db,
     blob_db: &Db,
@@ -908,15 +927,15 @@ fn materialize_folder_without_checks(
     Ok(())
 }
 
-/// Gets changes between two commit trees.
-/// This function compares two trees recursively and returns a list of changes between them.
-fn get_changes_between_commit_trees(
+/// Gets changes between two vx trees.
+/// This function compares two vx trees recursively and returns a list of changes between them.
+fn get_changes_between_vx_trees(
     context: &Context,
     db: &Db,
     tree1_hash: Digest,
     tree2_hash: Digest,
 ) -> Result<Vec<Change>, TreeError> {
-    // If trees are identical, return empty changes
+    // If vx trees are identical, return empty changes
     if tree1_hash == tree2_hash {
         return Ok(Vec::new());
     }
@@ -924,13 +943,13 @@ fn get_changes_between_commit_trees(
     let mut changes = Vec::new();
 
     // Start the recursive comparison from the root path
-    compare_trees_recursively(db, &mut changes, &PathBuf::new(), tree1_hash, tree2_hash)?;
+    compare_vx_trees_recursively(db, &mut changes, &PathBuf::new(), tree1_hash, tree2_hash)?;
 
     Ok(changes)
 }
 
-/// Recursively compares two trees and collects the changes between them.
-fn compare_trees_recursively(
+/// Recursively compares two vx trees and collects the changes between them.
+fn compare_vx_trees_recursively(
     db: &Db,
     changes: &mut Vec<Change>,
     path: &Path,
@@ -941,19 +960,27 @@ fn compare_trees_recursively(
         return Ok(());
     }
 
-    // Get both trees
+    changes.push(Change {
+        action: ChangeAction::Modified,
+        path: path.to_path_buf(),
+        change_type: ChangeType::Folder,
+        contenthash_left: hash1,
+        contenthash_right: hash2,
+    });
+
+    // Get both vx trees
     let tree1 = treestore::get(db, hash1)?;
     let tree2 = treestore::get(db, hash2)?;
 
     let mut iter1 = tree1.folders.iter().peekable();
     let mut iter2 = tree2.folders.iter().peekable();
 
-    // Compare folders that exist in both trees
+    // Compare folders that exist in both vx trees
     while let (Some(folder1), Some(folder2)) = (iter1.peek(), iter2.peek()) {
         match folder1.name.cmp(&folder2.name) {
             Ordering::Equal => {
                 if folder1.hash != folder2.hash {
-                    compare_trees_recursively(db, changes, path, folder1.hash, folder2.hash)?;
+                    compare_vx_trees_recursively(db, changes, path, folder1.hash, folder2.hash)?;
                 }
                 iter1.next();
                 iter2.next();
@@ -964,7 +991,8 @@ fn compare_trees_recursively(
                     action: ChangeAction::Deleted,
                     path: path.join(&folder1.name),
                     change_type: ChangeType::Folder,
-                    contenthash: folder1.hash,
+                    contenthash_left: folder1.hash,
+                    contenthash_right: Digest::NONE,
                 });
                 iter1.next();
             }
@@ -974,7 +1002,8 @@ fn compare_trees_recursively(
                     action: ChangeAction::Added,
                     path: path.join(&folder2.name),
                     change_type: ChangeType::Folder,
-                    contenthash: folder2.hash,
+                    contenthash_left: Digest::NONE,
+                    contenthash_right: folder2.hash,
                 });
                 iter2.next();
             }
@@ -987,7 +1016,8 @@ fn compare_trees_recursively(
             action: ChangeAction::Deleted,
             path: path.join(&folder1.name),
             change_type: ChangeType::Folder,
-            contenthash: folder1.hash,
+            contenthash_left: folder1.hash,
+            contenthash_right: Digest::NONE,
         });
     }
 
@@ -997,7 +1027,8 @@ fn compare_trees_recursively(
             action: ChangeAction::Added,
             path: path.join(&folder2.name),
             change_type: ChangeType::Folder,
-            contenthash: folder2.hash,
+            contenthash_left: Digest::NONE,
+            contenthash_right: folder2.hash,
         });
     }
 
@@ -1013,7 +1044,8 @@ fn compare_trees_recursively(
                         action: ChangeAction::Modified,
                         path: path.join(&file1.name),
                         change_type: ChangeType::File,
-                        contenthash: file2.blob.contenthash,
+                        contenthash_left: file1.blob.contenthash,
+                        contenthash_right: file2.blob.contenthash,
                     });
                 }
                 iter1.next();
@@ -1025,7 +1057,8 @@ fn compare_trees_recursively(
                     action: ChangeAction::Deleted,
                     path: path.join(&file1.name),
                     change_type: ChangeType::File,
-                    contenthash: file1.blob.contenthash,
+                    contenthash_left: file1.blob.contenthash,
+                    contenthash_right: Digest::NONE,
                 });
                 iter1.next();
             }
@@ -1035,7 +1068,8 @@ fn compare_trees_recursively(
                     action: ChangeAction::Added,
                     path: path.join(&file2.name),
                     change_type: ChangeType::File,
-                    contenthash: file2.blob.contenthash,
+                    contenthash_left: Digest::NONE,
+                    contenthash_right: file2.blob.contenthash,
                 });
                 iter2.next();
             }
@@ -1048,7 +1082,8 @@ fn compare_trees_recursively(
             action: ChangeAction::Deleted,
             path: path.join(&file1.name),
             change_type: ChangeType::File,
-            contenthash: file1.blob.contenthash,
+            contenthash_left: file1.blob.contenthash,
+            contenthash_right: Digest::NONE,
         });
     }
 
@@ -1058,7 +1093,8 @@ fn compare_trees_recursively(
             action: ChangeAction::Added,
             path: path.join(&file2.name),
             change_type: ChangeType::File,
-            contenthash: file2.blob.contenthash,
+            contenthash_left: Digest::NONE,
+            contenthash_right: file2.blob.contenthash,
         });
     }
 
